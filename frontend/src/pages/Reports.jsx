@@ -78,8 +78,17 @@ export default function Reports() {
   const summary = report?.summary || {};
   const byEntity = report?.by_entity || [];
   const byAsset = report?.by_asset || [];
-  const timeline = report?.timeline || [];
-  const details = report?.distributions || [];
+  const details = report?.detail || [];
+
+  // Build timeline from detail data (group by month)
+  const timelineMap = {};
+  details.forEach(row => {
+    const monthKey = row.distribution_date ? row.distribution_date.slice(0, 7) : '';
+    if (!monthKey) return;
+    if (!timelineMap[monthKey]) timelineMap[monthKey] = { month: monthKey, amount: 0 };
+    timelineMap[monthKey].amount += parseFloat(row.amount || 0);
+  });
+  const timeline = Object.values(timelineMap).sort((a, b) => a.month.localeCompare(b.month));
 
   const entityPieData = byEntity.map(e => ({ name: e.entity_name || e.name, value: parseFloat(e.total_amount || 0) }));
   const totalAmount = byEntity.reduce((s, e) => s + parseFloat(e.total_amount || 0), 0);
@@ -185,7 +194,7 @@ export default function Reports() {
             <>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
-                  { label: 'Total Distributed', value: formatCurrency(summary.total_amount || totalAmount), icon: '💰' },
+                  { label: 'Total Distributed', value: formatCurrency(summary.total_distributions || totalAmount), icon: '💰' },
                   { label: 'Distributions', value: summary.distribution_count || details.length, icon: '📋' },
                   { label: 'Entities', value: summary.entity_count || byEntity.length, icon: '🏢' },
                   { label: 'Assets', value: summary.asset_count || byAsset.length, icon: '💼' },
@@ -274,7 +283,7 @@ export default function Reports() {
                       <ResponsiveContainer width="100%" height={240}>
                         <BarChart data={timeline}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                          <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                          <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                           <YAxis tickFormatter={v => `$${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
                           <Tooltip formatter={v => formatCurrency(v)} />
                           <Bar dataKey="amount" fill="#3B82F6" radius={[4,4,0,0]} />
@@ -312,7 +321,7 @@ export default function Reports() {
                       <tbody className="divide-y divide-gray-100">
                         {details.map((row, i) => (
                           <tr key={i} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 text-sm text-gray-600">{row.date ? format(parseISO(row.date), 'MMM dd, yyyy') : '-'}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600">{row.distribution_date ? format(parseISO(row.distribution_date), 'MMM dd, yyyy') : '-'}</td>
                             <td className="px-4 py-3 text-sm font-medium text-gray-900">{row.asset_name || row.asset || '-'}</td>
                             <td className="px-4 py-3 text-sm text-gray-700">{row.entity_name || row.entity || '-'}</td>
                             <td className="px-4 py-3 text-sm font-semibold text-emerald-600">{formatCurrency(row.amount)}</td>

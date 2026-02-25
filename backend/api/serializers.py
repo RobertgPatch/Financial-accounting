@@ -31,6 +31,13 @@ class DistributionAllocationSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class NestedAllocationSerializer(serializers.ModelSerializer):
+    """Used for nested writes inside DistributionWriteSerializer."""
+    class Meta:
+        model = DistributionAllocation
+        exclude = ['distribution']
+
+
 class DistributionSerializer(serializers.ModelSerializer):
     allocations = DistributionAllocationSerializer(many=True, read_only=True)
     asset_name = serializers.CharField(source='asset.name', read_only=True)
@@ -41,7 +48,7 @@ class DistributionSerializer(serializers.ModelSerializer):
 
 
 class DistributionWriteSerializer(serializers.ModelSerializer):
-    allocations = DistributionAllocationSerializer(many=True, required=False)
+    allocations = NestedAllocationSerializer(many=True, required=False)
 
     class Meta:
         model = Distribution
