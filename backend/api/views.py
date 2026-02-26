@@ -1,4 +1,5 @@
 from django.http import HttpResponse
+from datetime import date
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -42,13 +43,20 @@ class DistributionAllocationViewSet(viewsets.ModelViewSet):
 
 
 def _parse_report_params(data):
+    def _normalize_ids(value):
+        if not value:
+            return None
+        if isinstance(value, (list, tuple)):
+            return [int(v) for v in value if str(v).strip()]
+        return [int(item.strip()) for item in str(value).split(',') if item.strip()]
+
     return {
         'period_type': data.get('period_type', 'yearly'),
-        'year': int(data.get('year', 2024)),
+        'year': int(data.get('year', date.today().year)),
         'quarter': int(data['quarter']) if data.get('quarter') else None,
         'month': int(data['month']) if data.get('month') else None,
-        'entity_ids': data.get('entity_ids') or None,
-        'asset_ids': data.get('asset_ids') or None,
+        'entity_ids': _normalize_ids(data.get('entity_ids')),
+        'asset_ids': _normalize_ids(data.get('asset_ids')),
     }
 
 

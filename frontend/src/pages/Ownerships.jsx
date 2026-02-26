@@ -54,9 +54,9 @@ export default function Ownerships() {
     const assetId = form.asset;
     const pct = parseFloat(form.percentage);
     const existing = ownerships.filter(o => {
-      const oAssetId = o.asset?.id || o.asset;
-      if (oAssetId != assetId) return false;
-      if (editing && (o.entity?.id || o.entity) == (editing.entity?.id || editing.entity)) return false;
+      const oAssetId = String(o.asset?.id ?? o.asset);
+      if (oAssetId !== String(assetId)) return false;
+      if (editing && String(o.id) === String(editing.id)) return false;
       return true;
     });
     const total = existing.reduce((s, o) => s + parseFloat(o.percentage || 0), 0);
@@ -89,7 +89,7 @@ export default function Ownerships() {
 
   const getName = (obj, list) => {
     if (typeof obj === 'object' && obj?.name) return obj.name;
-    const found = list.find(i => i.id == obj);
+    const found = list.find(i => String(i.id) === String(obj));
     return found?.name || obj || '-';
   };
 

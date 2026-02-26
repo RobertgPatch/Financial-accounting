@@ -162,6 +162,7 @@ class ReportGenerationTest(TestCase):
         response = self.client.post('/api/reports/generate/', data, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('summary', response.data)
+        self.assertIn('distribution_count', response.data['summary'])
         self.assertIn('by_entity', response.data)
         self.assertIn('by_asset', response.data)
 

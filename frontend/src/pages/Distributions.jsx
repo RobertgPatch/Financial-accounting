@@ -5,17 +5,17 @@ import Modal from '../components/ui/Modal';
 import Table from '../components/ui/Table';
 import Badge from '../components/ui/Badge';
 import { PlusIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
-import { getDistributions, createDistribution, updateDistribution, deleteDistribution } from '../api/distributions';
+import { getDistributions, createDistribution, deleteDistribution } from '../api/distributions';
 import { getAssets } from '../api/assets';
 import { getOwnerships } from '../api/ownerships';
 import { getEntities } from '../api/entities';
 import { format, parseISO } from 'date-fns';
 
-const distTypes = ['dividend', 'interest', 'capital_gain', 'return_of_capital', 'other'];
-const typeColors = { dividend: 'green', interest: 'blue', capital_gain: 'purple', return_of_capital: 'yellow', other: 'gray' };
+const distTypes = ['regular', 'special', 'return_of_capital', 'liquidating'];
+const typeColors = { regular: 'green', special: 'blue', return_of_capital: 'yellow', liquidating: 'red' };
 const formatCurrency = (v) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v || 0);
 
-const emptyForm = { asset: '', date: '', total_amount: '', distribution_type: 'dividend', notes: '', allocations: [] };
+const emptyForm = { asset: '', distribution_date: '', total_amount: '', distribution_type: 'regular', notes: '', allocations: [] };
 
 export default function Distributions() {
   const [distributions, setDistributions] = useState([]);
@@ -47,12 +47,12 @@ export default function Distributions() {
 
   const handleAssetChange = (assetId) => {
     const assetOwnerships = ownerships.filter(o => {
-      const oAssetId = o.asset?.id || o.asset;
-      return oAssetId == assetId;
+      const oAssetId = o.asset?.id ?? o.asset;
+      return String(oAssetId) === String(assetId);
     });
     const allocations = assetOwnerships.map(o => {
-      const entityId = o.entity?.id || o.entity;
-      const entity = entities.find(e => e.id == entityId);
+      const entityId = o.entity?.id ?? o.entity;
+      const entity = entities.find(e => String(e.id) === String(entityId));
       return {
         entity: entityId,
         entity_name: entity?.name || entityId,
@@ -79,7 +79,7 @@ export default function Distributions() {
     try {
       const payload = {
         asset: form.asset,
-        date: form.date,
+        distribution_date: form.distribution_date,
         total_amount: form.total_amount,
         distribution_type: form.distribution_type,
         notes: form.notes,
@@ -102,12 +102,12 @@ export default function Distributions() {
 
   const getAssetName = (a) => {
     if (typeof a === 'object' && a?.name) return a.name;
-    const found = assets.find(x => x.id == a);
+    const found = assets.find(x => String(x.id) === String(a));
     return found?.name || a || '-';
   };
 
   const columns = [
-    { header: 'Date', key: 'date', render: r => r.date ? format(parseISO(r.date), 'MMM dd, yyyy') : '-' },
+    { header: 'Date', key: 'distribution_date', render: r => r.distribution_date ? format(parseISO(r.distribution_date), 'MMM dd, yyyy') : '-' },
     { header: 'Asset', key: 'asset', render: r => <span className="font-medium text-gray-900">{getAssetName(r.asset)}</span> },
     { header: 'Type', key: 'distribution_type', render: r => <Badge color={typeColors[r.distribution_type] || 'gray'}>{(r.distribution_type || '').replace('_', ' ')}</Badge> },
     { header: 'Total Amount', key: 'total_amount', render: r => <span className="font-semibold text-emerald-600">{formatCurrency(r.total_amount)}</span> },
@@ -140,7 +140,7 @@ export default function Distributions() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Date *</label>
-              <input required type="date" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" value={form.date} onChange={e => setForm(f => ({...f, date: e.target.value}))} />
+              <input required type="date" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" value={form.distribution_date} onChange={e => setForm(f => ({...f, distribution_date: e.target.value}))} />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Total Amount *</label>

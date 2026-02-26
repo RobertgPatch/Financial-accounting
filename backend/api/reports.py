@@ -65,20 +65,24 @@ def generate_distribution_report(
         entity_summary[eid]['by_asset'][aid]['total_amount'] += alloc.amount
         entity_summary[eid]['by_asset'][aid]['distribution_count'] += 1
 
-    # Aggregate by asset
+    # Aggregate by asset (based on allocations to stay consistent with entity filter)
     asset_summary = {}
-    for dist in distributions:
-        aid = dist.asset_id
+    asset_distribution_ids = {}
+    for alloc in allocations:
+        aid = alloc.distribution.asset_id
         if aid not in asset_summary:
             asset_summary[aid] = {
                 'asset_id': aid,
-                'asset_name': dist.asset.name,
-                'asset_type': dist.asset.asset_type,
+                'asset_name': alloc.distribution.asset.name,
+                'asset_type': alloc.distribution.asset.asset_type,
                 'total_amount': Decimal('0.00'),
                 'distribution_count': 0,
             }
-        asset_summary[aid]['total_amount'] += dist.total_amount
-        asset_summary[aid]['distribution_count'] += 1
+            asset_distribution_ids[aid] = set()
+        asset_summary[aid]['total_amount'] += alloc.amount
+        if alloc.distribution_id not in asset_distribution_ids[aid]:
+            asset_distribution_ids[aid].add(alloc.distribution_id)
+            asset_summary[aid]['distribution_count'] += 1
 
     # Build detail list
     detail = []
@@ -115,6 +119,7 @@ def generate_distribution_report(
         },
         'summary': {
             'total_distributions': str(total),
+            'distribution_count': len(detail),
             'entity_count': len(entity_summary),
             'asset_count': len(asset_summary),
         },
