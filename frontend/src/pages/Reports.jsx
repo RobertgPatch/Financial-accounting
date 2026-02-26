@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import {
+  Paper, Typography, Table as MuiTable, TableBody, TableCell, TableContainer,
+  TableHead, TableRow, Chip, Alert, Box, LinearProgress,
+} from '@mui/material';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -79,6 +83,7 @@ export default function Reports() {
   const byEntity = report?.by_entity || [];
   const byAsset = report?.by_asset || [];
   const details = report?.detail || [];
+  const budgetComparison = report?.budget_comparison || null;
 
   // Build timeline from detail data (group by month)
   const timelineMap = {};
@@ -305,6 +310,123 @@ export default function Reports() {
                     </Card>
                   )}
                 </div>
+              )}
+
+              {budgetComparison && (
+                <Paper sx={{ p: 3 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                      📊 Budget vs Actual — {budgetComparison.budget_name}
+                    </Typography>
+                    <Chip
+                      label={parseFloat(budgetComparison.total_variance) >= 0 ? 'Over Budget' : 'Under Budget'}
+                      color={parseFloat(budgetComparison.total_variance) >= 0 ? 'warning' : 'success'}
+                      size="small"
+                    />
+                  </Box>
+
+                  <Box sx={{ display: 'flex', gap: 3, mb: 3, flexWrap: 'wrap' }}>
+                    {[
+                      { label: 'Total Budgeted', value: formatCurrency(budgetComparison.total_budgeted), color: '#1976d2' },
+                      { label: 'Total Actual', value: formatCurrency(budgetComparison.total_actual), color: '#2e7d32' },
+                      { label: 'Variance', value: formatCurrency(budgetComparison.total_variance), color: parseFloat(budgetComparison.total_variance) >= 0 ? '#ed6c02' : '#2e7d32' },
+                      { label: 'Variance %', value: budgetComparison.total_variance_pct ? `${budgetComparison.total_variance_pct}%` : 'N/A', color: parseFloat(budgetComparison.total_variance) >= 0 ? '#ed6c02' : '#2e7d32' },
+                    ].map(({ label, value, color }) => (
+                      <Paper key={label} variant="outlined" sx={{ p: 2, flex: '1 1 150px', minWidth: 150 }}>
+                        <Typography variant="caption" color="text.secondary">{label}</Typography>
+                        <Typography variant="h6" sx={{ fontWeight: 700, color }}>{value}</Typography>
+                      </Paper>
+                    ))}
+                  </Box>
+
+                  {budgetComparison.by_entity?.length > 0 && (
+                    <Box sx={{ mb: 3 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>By Entity</Typography>
+                      <TableContainer component={Paper} variant="outlined">
+                        <MuiTable size="small">
+                          <TableHead>
+                            <TableRow sx={{ '& th': { fontWeight: 600, backgroundColor: '#f8fafc' } }}>
+                              <TableCell>Entity</TableCell>
+                              <TableCell align="right">Budgeted</TableCell>
+                              <TableCell align="right">Actual</TableCell>
+                              <TableCell align="right">Variance</TableCell>
+                              <TableCell align="right">Variance %</TableCell>
+                              <TableCell>Status</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {budgetComparison.by_entity.map((row, i) => {
+                              const variance = parseFloat(row.variance);
+                              return (
+                                <TableRow key={i} hover>
+                                  <TableCell sx={{ fontWeight: 500 }}>{row.entity_name}</TableCell>
+                                  <TableCell align="right">{formatCurrency(row.budgeted)}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600, color: 'success.main' }}>{formatCurrency(row.actual)}</TableCell>
+                                  <TableCell align="right" sx={{ color: variance >= 0 ? 'warning.main' : 'success.main', fontWeight: 600 }}>
+                                    {formatCurrency(row.variance)}
+                                  </TableCell>
+                                  <TableCell align="right">{row.variance_pct ? `${row.variance_pct}%` : 'N/A'}</TableCell>
+                                  <TableCell>
+                                    <Chip
+                                      label={variance >= 0 ? 'Over' : 'Under'}
+                                      size="small"
+                                      color={variance >= 0 ? 'warning' : 'success'}
+                                      variant="outlined"
+                                    />
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </MuiTable>
+                      </TableContainer>
+                    </Box>
+                  )}
+
+                  {budgetComparison.by_asset?.length > 0 && (
+                    <Box>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>By Asset</Typography>
+                      <TableContainer component={Paper} variant="outlined">
+                        <MuiTable size="small">
+                          <TableHead>
+                            <TableRow sx={{ '& th': { fontWeight: 600, backgroundColor: '#f8fafc' } }}>
+                              <TableCell>Asset</TableCell>
+                              <TableCell align="right">Budgeted</TableCell>
+                              <TableCell align="right">Actual</TableCell>
+                              <TableCell align="right">Variance</TableCell>
+                              <TableCell align="right">Variance %</TableCell>
+                              <TableCell>Status</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {budgetComparison.by_asset.map((row, i) => {
+                              const variance = parseFloat(row.variance);
+                              return (
+                                <TableRow key={i} hover>
+                                  <TableCell sx={{ fontWeight: 500 }}>{row.asset_name}</TableCell>
+                                  <TableCell align="right">{formatCurrency(row.budgeted)}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600, color: 'success.main' }}>{formatCurrency(row.actual)}</TableCell>
+                                  <TableCell align="right" sx={{ color: variance >= 0 ? 'warning.main' : 'success.main', fontWeight: 600 }}>
+                                    {formatCurrency(row.variance)}
+                                  </TableCell>
+                                  <TableCell align="right">{row.variance_pct ? `${row.variance_pct}%` : 'N/A'}</TableCell>
+                                  <TableCell>
+                                    <Chip
+                                      label={variance >= 0 ? 'Over' : 'Under'}
+                                      size="small"
+                                      color={variance >= 0 ? 'warning' : 'success'}
+                                      variant="outlined"
+                                    />
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </MuiTable>
+                      </TableContainer>
+                    </Box>
+                  )}
+                </Paper>
               )}
 
               {details.length > 0 && (

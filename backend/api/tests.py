@@ -5,7 +5,7 @@ from rest_framework import status
 from decimal import Decimal
 import datetime
 
-from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation
+from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation, Budget, BudgetLineItem
 
 
 class EntityAPITest(TestCase):
@@ -196,3 +196,106 @@ class ReportGenerationTest(TestCase):
             response['Content-Type'],
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
+
+
+class BudgetAPITest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.entity = Entity.objects.create(name='Budget Entity', entity_type='LLC')
+        self.asset = Asset.objects.create(name='Budget Property', asset_type='property')
+
+    def test_create_budget(self):
+        data = {
+            'name': 'FY2024 Budget',
+            'year': 2024,
+            'period_type': 'yearly',
+            'line_items': [
+                {
+                    'asset': self.asset.id,
+                    'entity': self.entity.id,
+                    'amount': '50000.00',
+                }
+            ]
+        }
+        response = self.client.post('/api/budgets/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['name'], 'FY2024 Budget')
+
+    def test_list_budgets(self):
+        Budget.objects.create(name='Budget A', year=2024, period_type='yearly')
+        Budget.objects.create(name='Budget B', year=2024, period_type='quarterly', quarter=1)
+        response = self.client.get('/api/budgets/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data), 2)
+
+    def test_get_budget_with_line_items(self):
+        budget = Budget.objects.create(name='Detail Budget', year=2024, period_type='yearly')
+        BudgetLineItem.objects.create(
+            budget=budget, asset=self.asset, entity=self.entity,
+            amount=Decimal('25000.00')
+        )
+        response = self.client.get(f'/api/budgets/{budget.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['line_items']), 1)
+        self.assertEqual(Decimal(response.data['line_items'][0]['amount']), Decimal('25000.00'))
+
+    def test_update_budget(self):
+        budget = Budget.objects.create(name='Old Budget', year=2024, period_type='yearly')
+        response = self.client.patch(
+            f'/api/budgets/{budget.id}/',
+            {'name': 'Updated Budget'},
+            format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['name'], 'Updated Budget')
+
+    def test_delete_budget(self):
+        budget = Budget.objects.create(name='Delete Me', year=2024, period_type='yearly')
+        response = self.client.delete(f'/api/budgets/{budget.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class BudgetVsActualReportTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.entity = Entity.objects.create(name='Report Entity', entity_type='LLC')
+        self.asset = Asset.objects.create(name='Report Property', asset_type='property')
+
+        # Create a budget
+        self.budget = Budget.objects.create(
+            name='FY2024 Budget', year=2024, period_type='yearly'
+        )
+        BudgetLineItem.objects.create(
+            budget=self.budget, asset=self.asset, entity=self.entity,
+            amount=Decimal('50000.00')
+        )
+
+        # Create actual distribution
+        dist = Distribution.objects.create(
+            asset=self.asset,
+            distribution_date=datetime.date(2024, 6, 15),
+            total_amount=Decimal('45000.00'),
+            distribution_type='regular'
+        )
+        DistributionAllocation.objects.create(
+            distribution=dist, entity=self.entity,
+            amount=Decimal('45000.00'), percentage=Decimal('100.0000')
+        )
+
+    def test_report_includes_budget_comparison(self):
+        data = {'period_type': 'yearly', 'year': 2024}
+        response = self.client.post('/api/reports/generate/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('budget_comparison', response.data)
+        bc = response.data['budget_comparison']
+        self.assertIsNotNone(bc)
+        self.assertEqual(bc['budget_name'], 'FY2024 Budget')
+        self.assertEqual(bc['total_budgeted'], '50000.00')
+        self.assertEqual(bc['total_actual'], '45000.00')
+        self.assertEqual(bc['total_variance'], '-5000.00')
+
+    def test_report_no_budget_returns_null(self):
+        data = {'period_type': 'yearly', 'year': 2020}
+        response = self.client.post('/api/reports/generate/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['budget_comparison'])

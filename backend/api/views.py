@@ -4,10 +4,11 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation
+from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation, Budget, BudgetLineItem
 from .serializers import (
     EntitySerializer, AssetSerializer, EntityAssetOwnershipSerializer,
     DistributionSerializer, DistributionWriteSerializer, DistributionAllocationSerializer,
+    BudgetSerializer, BudgetWriteSerializer, BudgetLineItemSerializer,
 )
 from .reports import generate_distribution_report
 from .excel_export import export_distribution_report
@@ -40,6 +41,20 @@ class DistributionViewSet(viewsets.ModelViewSet):
 class DistributionAllocationViewSet(viewsets.ModelViewSet):
     queryset = DistributionAllocation.objects.select_related('entity', 'distribution').all()
     serializer_class = DistributionAllocationSerializer
+
+
+class BudgetViewSet(viewsets.ModelViewSet):
+    queryset = Budget.objects.prefetch_related('line_items__asset', 'line_items__entity').all()
+
+    def get_serializer_class(self):
+        if self.action in ('create', 'update', 'partial_update'):
+            return BudgetWriteSerializer
+        return BudgetSerializer
+
+
+class BudgetLineItemViewSet(viewsets.ModelViewSet):
+    queryset = BudgetLineItem.objects.select_related('budget', 'asset', 'entity').all()
+    serializer_class = BudgetLineItemSerializer
 
 
 def _parse_report_params(data):

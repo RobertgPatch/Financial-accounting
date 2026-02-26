@@ -8,6 +8,8 @@ router.register(r'assets', views.AssetViewSet)
 router.register(r'ownerships', views.EntityAssetOwnershipViewSet)
 router.register(r'distributions', views.DistributionViewSet)
 router.register(r'distribution-allocations', views.DistributionAllocationViewSet)
+router.register(r'budgets', views.BudgetViewSet)
+router.register(r'budget-line-items', views.BudgetLineItemViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
