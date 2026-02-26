@@ -121,7 +121,7 @@ export default function Budgets() {
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this budget?')) return;
-    try { await deleteBudget(id); load(); } catch { alert('Delete failed'); }
+    try { await deleteBudget(id); load(); } catch (e) { alert(e.response?.data ? JSON.stringify(e.response.data) : 'Failed to delete budget. Please try again.'); }
   };
 
   const getBudgetTotal = (budget) => {

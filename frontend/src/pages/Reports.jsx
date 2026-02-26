@@ -320,7 +320,7 @@ export default function Reports() {
                     </Typography>
                     <Chip
                       label={parseFloat(budgetComparison.total_variance) >= 0 ? 'Over Budget' : 'Under Budget'}
-                      color={parseFloat(budgetComparison.total_variance) >= 0 ? 'success' : 'warning'}
+                      color={parseFloat(budgetComparison.total_variance) >= 0 ? 'warning' : 'success'}
                       size="small"
                     />
                   </Box>
@@ -329,8 +329,8 @@ export default function Reports() {
                     {[
                       { label: 'Total Budgeted', value: formatCurrency(budgetComparison.total_budgeted), color: '#1976d2' },
                       { label: 'Total Actual', value: formatCurrency(budgetComparison.total_actual), color: '#2e7d32' },
-                      { label: 'Variance', value: formatCurrency(budgetComparison.total_variance), color: parseFloat(budgetComparison.total_variance) >= 0 ? '#2e7d32' : '#d32f2f' },
-                      { label: 'Variance %', value: budgetComparison.total_variance_pct ? `${budgetComparison.total_variance_pct}%` : 'N/A', color: parseFloat(budgetComparison.total_variance) >= 0 ? '#2e7d32' : '#d32f2f' },
+                      { label: 'Variance', value: formatCurrency(budgetComparison.total_variance), color: parseFloat(budgetComparison.total_variance) >= 0 ? '#ed6c02' : '#2e7d32' },
+                      { label: 'Variance %', value: budgetComparison.total_variance_pct ? `${budgetComparison.total_variance_pct}%` : 'N/A', color: parseFloat(budgetComparison.total_variance) >= 0 ? '#ed6c02' : '#2e7d32' },
                     ].map(({ label, value, color }) => (
                       <Paper key={label} variant="outlined" sx={{ p: 2, flex: '1 1 150px', minWidth: 150 }}>
                         <Typography variant="caption" color="text.secondary">{label}</Typography>
@@ -362,7 +362,7 @@ export default function Reports() {
                                   <TableCell sx={{ fontWeight: 500 }}>{row.entity_name}</TableCell>
                                   <TableCell align="right">{formatCurrency(row.budgeted)}</TableCell>
                                   <TableCell align="right" sx={{ fontWeight: 600, color: 'success.main' }}>{formatCurrency(row.actual)}</TableCell>
-                                  <TableCell align="right" sx={{ color: variance >= 0 ? 'success.main' : 'error.main', fontWeight: 600 }}>
+                                  <TableCell align="right" sx={{ color: variance >= 0 ? 'warning.main' : 'success.main', fontWeight: 600 }}>
                                     {formatCurrency(row.variance)}
                                   </TableCell>
                                   <TableCell align="right">{row.variance_pct ? `${row.variance_pct}%` : 'N/A'}</TableCell>
@@ -370,7 +370,7 @@ export default function Reports() {
                                     <Chip
                                       label={variance >= 0 ? 'Over' : 'Under'}
                                       size="small"
-                                      color={variance >= 0 ? 'success' : 'warning'}
+                                      color={variance >= 0 ? 'warning' : 'success'}
                                       variant="outlined"
                                     />
                                   </TableCell>
@@ -406,7 +406,7 @@ export default function Reports() {
                                   <TableCell sx={{ fontWeight: 500 }}>{row.asset_name}</TableCell>
                                   <TableCell align="right">{formatCurrency(row.budgeted)}</TableCell>
                                   <TableCell align="right" sx={{ fontWeight: 600, color: 'success.main' }}>{formatCurrency(row.actual)}</TableCell>
-                                  <TableCell align="right" sx={{ color: variance >= 0 ? 'success.main' : 'error.main', fontWeight: 600 }}>
+                                  <TableCell align="right" sx={{ color: variance >= 0 ? 'warning.main' : 'success.main', fontWeight: 600 }}>
                                     {formatCurrency(row.variance)}
                                   </TableCell>
                                   <TableCell align="right">{row.variance_pct ? `${row.variance_pct}%` : 'N/A'}</TableCell>
@@ -414,7 +414,7 @@ export default function Reports() {
                                     <Chip
                                       label={variance >= 0 ? 'Over' : 'Under'}
                                       size="small"
-                                      color={variance >= 0 ? 'success' : 'warning'}
+                                      color={variance >= 0 ? 'warning' : 'success'}
                                       variant="outlined"
                                     />
                                   </TableCell>
