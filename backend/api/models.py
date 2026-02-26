@@ -99,3 +99,41 @@ class DistributionAllocation(models.Model):
 
     def __str__(self):
         return f"{self.entity.name} receives ${self.amount} from {self.distribution}"
+
+
+class Budget(models.Model):
+    PERIOD_TYPE_CHOICES = [
+        ('yearly', 'Yearly'),
+        ('quarterly', 'Quarterly'),
+        ('monthly', 'Monthly'),
+    ]
+
+    name = models.CharField(max_length=255)
+    year = models.IntegerField()
+    period_type = models.CharField(max_length=20, choices=PERIOD_TYPE_CHOICES, default='yearly')
+    quarter = models.IntegerField(blank=True, null=True)
+    month = models.IntegerField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-year', 'name']
+
+    def __str__(self):
+        return f"{self.name} ({self.year})"
+
+
+class BudgetLineItem(models.Model):
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='line_items')
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='budget_line_items')
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name='budget_line_items', blank=True, null=True)
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['budget', 'asset', 'entity']
+
+    def __str__(self):
+        entity_str = f" → {self.entity.name}" if self.entity else ""
+        return f"{self.budget.name}: {self.asset.name}{entity_str} = ${self.amount}"

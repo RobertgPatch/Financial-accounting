@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation
+from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation, Budget, BudgetLineItem
 
 
 class EntitySerializer(serializers.ModelSerializer):
@@ -70,4 +70,54 @@ class DistributionWriteSerializer(serializers.ModelSerializer):
             instance.allocations.all().delete()
             for alloc_data in allocations_data:
                 DistributionAllocation.objects.create(distribution=instance, **alloc_data)
+        return instance
+
+
+class BudgetLineItemSerializer(serializers.ModelSerializer):
+    asset_name = serializers.CharField(source='asset.name', read_only=True)
+    entity_name = serializers.CharField(source='entity.name', read_only=True, default=None)
+
+    class Meta:
+        model = BudgetLineItem
+        fields = '__all__'
+
+
+class NestedBudgetLineItemSerializer(serializers.ModelSerializer):
+    """Used for nested writes inside BudgetWriteSerializer."""
+    class Meta:
+        model = BudgetLineItem
+        exclude = ['budget']
+
+
+class BudgetSerializer(serializers.ModelSerializer):
+    line_items = BudgetLineItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Budget
+        fields = '__all__'
+
+
+class BudgetWriteSerializer(serializers.ModelSerializer):
+    line_items = NestedBudgetLineItemSerializer(many=True, required=False)
+
+    class Meta:
+        model = Budget
+        fields = '__all__'
+
+    def create(self, validated_data):
+        line_items_data = validated_data.pop('line_items', [])
+        budget = Budget.objects.create(**validated_data)
+        for item_data in line_items_data:
+            BudgetLineItem.objects.create(budget=budget, **item_data)
+        return budget
+
+    def update(self, instance, validated_data):
+        line_items_data = validated_data.pop('line_items', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if line_items_data is not None:
+            instance.line_items.all().delete()
+            for item_data in line_items_data:
+                BudgetLineItem.objects.create(budget=instance, **item_data)
         return instance

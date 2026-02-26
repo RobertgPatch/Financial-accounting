@@ -1,6 +1,6 @@
 from decimal import Decimal
 from datetime import date
-from .models import Distribution, DistributionAllocation, Entity, Asset, EntityAssetOwnership
+from .models import Distribution, DistributionAllocation, Entity, Asset, EntityAssetOwnership, Budget, BudgetLineItem
 
 
 def generate_distribution_report(
@@ -126,4 +126,110 @@ def generate_distribution_report(
         'by_entity': list(entity_summary.values()),
         'by_asset': list(asset_summary.values()),
         'detail': detail,
+        'budget_comparison': _build_budget_comparison(
+            period_type, year, quarter, month, entity_ids, asset_ids,
+            entity_summary, asset_summary,
+        ),
+    }
+
+
+def _build_budget_comparison(
+    period_type, year, quarter, month,
+    entity_ids, asset_ids,
+    entity_summary, asset_summary,
+):
+    """Compare actual distributions against a matching budget."""
+    budgets = Budget.objects.filter(year=year, period_type=period_type)
+    if period_type == 'quarterly' and quarter:
+        budgets = budgets.filter(quarter=quarter)
+    elif period_type == 'monthly' and month:
+        budgets = budgets.filter(month=month)
+
+    budget = budgets.prefetch_related('line_items__asset', 'line_items__entity').first()
+    if not budget:
+        return None
+
+    line_items = budget.line_items.all()
+    if asset_ids:
+        line_items = line_items.filter(asset_id__in=asset_ids)
+    if entity_ids:
+        line_items = line_items.filter(entity_id__in=entity_ids)
+
+    # Budget totals by entity and by asset
+    budget_by_entity = {}
+    budget_by_asset = {}
+    total_budgeted = Decimal('0.00')
+
+    for item in line_items:
+        total_budgeted += item.amount
+        if item.entity_id:
+            eid = item.entity_id
+            if eid not in budget_by_entity:
+                budget_by_entity[eid] = {
+                    'entity_id': eid,
+                    'entity_name': item.entity.name,
+                    'budgeted': Decimal('0.00'),
+                }
+            budget_by_entity[eid]['budgeted'] += item.amount
+        aid = item.asset_id
+        if aid not in budget_by_asset:
+            budget_by_asset[aid] = {
+                'asset_id': aid,
+                'asset_name': item.asset.name,
+                'budgeted': Decimal('0.00'),
+            }
+        budget_by_asset[aid]['budgeted'] += item.amount
+
+    # Build entity comparison
+    entity_comparison = []
+    all_entity_ids = set(budget_by_entity.keys()) | set(entity_summary.keys())
+    for eid in all_entity_ids:
+        budgeted = budget_by_entity.get(eid, {}).get('budgeted', Decimal('0.00'))
+        actual_data = entity_summary.get(eid, {})
+        actual = Decimal(actual_data.get('total_amount', '0.00'))
+        name = budget_by_entity.get(eid, {}).get('entity_name') or actual_data.get('entity_name', '')
+        variance = actual - budgeted
+        pct = (variance / budgeted * 100) if budgeted else None
+        entity_comparison.append({
+            'entity_id': eid,
+            'entity_name': name,
+            'budgeted': str(budgeted),
+            'actual': str(actual),
+            'variance': str(variance),
+            'variance_pct': str(pct.quantize(Decimal('0.01'))) if pct is not None else None,
+        })
+
+    # Build asset comparison
+    asset_comparison = []
+    all_asset_ids = set(budget_by_asset.keys()) | set(asset_summary.keys())
+    for aid in all_asset_ids:
+        budgeted = budget_by_asset.get(aid, {}).get('budgeted', Decimal('0.00'))
+        actual_data = asset_summary.get(aid, {})
+        actual = Decimal(actual_data.get('total_amount', '0.00'))
+        name = budget_by_asset.get(aid, {}).get('asset_name') or actual_data.get('asset_name', '')
+        variance = actual - budgeted
+        pct = (variance / budgeted * 100) if budgeted else None
+        asset_comparison.append({
+            'asset_id': aid,
+            'asset_name': name,
+            'budgeted': str(budgeted),
+            'actual': str(actual),
+            'variance': str(variance),
+            'variance_pct': str(pct.quantize(Decimal('0.01'))) if pct is not None else None,
+        })
+
+    total_actual = sum(Decimal(e.get('total_amount', '0.00')) for e in entity_summary.values())
+    total_variance = total_actual - total_budgeted
+
+    return {
+        'budget_id': budget.id,
+        'budget_name': budget.name,
+        'total_budgeted': str(total_budgeted),
+        'total_actual': str(total_actual),
+        'total_variance': str(total_variance),
+        'total_variance_pct': str(
+            (total_variance / total_budgeted * 100).quantize(Decimal('0.01'))
+        ) if total_budgeted else None,
+        'by_entity': entity_comparison,
+        'by_asset': asset_comparison,
     }
