@@ -22,16 +22,16 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="flex min-h-full items-center justify-center p-4">
+      <div className="flex min-h-full items-end sm:items-center justify-center p-0 sm:p-4">
         <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
-        <div className={`relative bg-white rounded-xl shadow-xl w-full ${sizes[size]} transform transition-all`}>
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div className={`relative bg-white rounded-t-xl sm:rounded-xl shadow-xl w-full ${sizes[size]} transform transition-all max-h-[90vh] overflow-y-auto`}>
+          <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10">
             <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
               <XMarkIcon className="h-5 w-5" />
             </button>
           </div>
-          <div className="px-6 py-5">{children}</div>
+          <div className="px-4 sm:px-6 py-5">{children}</div>
         </div>
       </div>
     </div>

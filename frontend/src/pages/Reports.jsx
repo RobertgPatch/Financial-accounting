@@ -192,7 +192,7 @@ export default function Reports() {
 
           {!loading && report && (
             <>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
                   { label: 'Total Distributed', value: formatCurrency(summary.total_distributions || totalAmount), icon: '💰' },
                   { label: 'Distributions', value: summary.distribution_count || details.length, icon: '📋' },
