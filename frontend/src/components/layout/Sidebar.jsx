@@ -7,6 +7,7 @@ import {
   LinkIcon,
   BanknotesIcon,
   ChartBarIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline';
 
 const navItems = [
@@ -18,10 +19,17 @@ const navItems = [
   { path: '/reports', label: 'Reports', icon: ChartBarIcon },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen, onClose }) {
   return (
-    <aside className="w-64 min-h-screen bg-[#0F172A] flex flex-col">
-      <div className="px-6 py-6 border-b border-white/10">
+    <aside
+      className={`
+        fixed inset-y-0 left-0 z-40 w-64 bg-[#0F172A] flex flex-col
+        transform transition-transform duration-200 ease-in-out
+        lg:relative lg:translate-x-0
+        ${isOpen ? 'translate-x-0' : '-translate-x-full'}
+      `}
+    >
+      <div className="px-6 py-6 border-b border-white/10 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
             <BanknotesIcon className="h-5 w-5 text-white" />
@@ -31,6 +39,12 @@ export default function Sidebar() {
             <p className="text-gray-400 text-xs">Distribution Manager</p>
           </div>
         </div>
+        <button
+          onClick={onClose}
+          className="lg:hidden text-gray-400 hover:text-white transition-colors"
+        >
+          <XMarkIcon className="h-5 w-5" />
+        </button>
       </div>
       <nav className="flex-1 px-3 py-4 space-y-1">
         {navItems.map(({ path, label, icon: Icon }) => (

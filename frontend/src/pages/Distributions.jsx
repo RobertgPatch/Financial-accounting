@@ -130,7 +130,7 @@ export default function Distributions() {
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Add Distribution" size="lg">
         <form onSubmit={handleSave} className="space-y-4">
           {error && <div className="text-red-600 text-sm bg-red-50 p-3 rounded-lg">{error}</div>}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Asset *</label>
               <select required className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" value={form.asset} onChange={e => handleAssetChange(e.target.value)}>
