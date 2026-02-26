@@ -94,6 +94,16 @@ The schema is intentionally **extensible** — `Asset` supports any asset type, 
 
 ---
 
+## Live Demo
+
+The frontend is deployed to GitHub Pages:
+
+**🌐 https://robertgpatch.github.io/Financial-accounting/**
+
+> **Note:** The live demo's API calls will only work if you also have the backend running and configure `API_BASE_URL` in the repository **Variables** (Settings → Secrets and variables → Actions → Variables).
+
+---
+
 ## Quick Start
 
 ### Prerequisites
