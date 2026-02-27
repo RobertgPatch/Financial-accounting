@@ -16,4 +16,4 @@ RUN python manage.py collectstatic --noinput || echo "collectstatic skipped (no 
 
 EXPOSE 8000
 
-CMD ["gunicorn", "financial_accounting.wsgi:application", "--bind", "0.0.0.0:8000"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn financial_accounting.wsgi:application --bind 0.0.0.0:${PORT:-8000}"]

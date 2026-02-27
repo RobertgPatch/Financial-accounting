@@ -3,10 +3,12 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+RUN npm ci && npm install serve
 
 COPY . .
 
-EXPOSE 5173
+RUN npm run build
 
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+EXPOSE 3000
+
+CMD ["sh", "-c", "npx serve -s dist -l tcp://0.0.0.0:${PORT:-3000}"]

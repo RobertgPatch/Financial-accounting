@@ -154,6 +154,51 @@ docker-compose up --build
 
 ---
 
+## Railway Deployment
+
+Both the backend and frontend Dockerfiles are configured to read Railway's `PORT` environment variable, which is the key requirement for avoiding **502 errors**.
+
+### Setup Steps
+
+1. **Create a new Railway project** at [railway.app](https://railway.app).
+
+2. **Add a PostgreSQL plugin** — Railway will automatically set `DATABASE_URL` for the backend service.
+
+3. **Deploy the backend**:
+   - Click **New → GitHub Repo** and select this repository.
+   - Set the **Root Directory** to `backend`.
+   - Add these environment variables in the service **Variables** tab:
+     | Variable | Value |
+     |----------|-------|
+     | `SECRET_KEY` | A strong random key (see `.env.example`) |
+     | `DJANGO_DEBUG` | `False` |
+     | `DJANGO_ALLOWED_HOSTS` | `.up.railway.app` |
+     | `CORS_ALLOWED_ORIGINS` | `https://<your-frontend>.up.railway.app` |
+     | `DATABASE_URL` | Set automatically by the PostgreSQL plugin |
+
+   - Railway detects the `Dockerfile`, builds, and runs the backend on the `PORT` it assigns.
+
+4. **Deploy the frontend**:
+   - Click **New → GitHub Repo** and select this repository again.
+   - Set the **Root Directory** to `frontend`.
+   - Add this environment variable:
+     | Variable | Value |
+     |----------|-------|
+     | `VITE_API_BASE_URL` | `https://<your-backend>.up.railway.app/api` |
+
+   - Railway detects the `Dockerfile`, builds the React app, and serves it on the assigned `PORT`.
+
+5. **Generate domains** for both services under **Settings → Networking → Generate Domain**.
+
+### How It Works
+
+- Railway injects a `PORT` environment variable into each container.
+- The **backend** Dockerfile runs: `gunicorn ... --bind 0.0.0.0:$PORT`
+- The **frontend** Dockerfile builds the React app and serves it with `serve -s dist -l tcp://0.0.0.0:$PORT`
+- If `PORT` is not set (e.g., local Docker), the backend defaults to `8000` and the frontend to `3000`.
+
+---
+
 ## CI/CD (GitHub Actions)
 
 | Workflow | Trigger | What it does |
