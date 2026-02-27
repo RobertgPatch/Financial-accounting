@@ -11,6 +11,11 @@ services:
       - POSTGRES_DB=financial_accounting
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   backend:
@@ -30,7 +35,8 @@ services:
       - SECRET_KEY=django-insecure-local-dev-key
     command: python manage.py runserver 0.0.0.0:8000
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
