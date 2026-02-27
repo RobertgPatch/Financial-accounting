@@ -26,7 +26,8 @@ export default function Dashboard() {
         setAssets(a.data.results || a.data || []);
         setDistributions(d.data.results || d.data || []);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('Dashboard data fetch failed:', err);
         setError('Unable to load dashboard data. The server may be starting up — please try again in a moment.');
       })
       .finally(() => setLoading(false));
