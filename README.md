@@ -162,7 +162,11 @@ Both the backend and frontend Dockerfiles are configured to read Railway's `PORT
 
 1. **Create a new Railway project** at [railway.app](https://railway.app).
 
-2. **Add a PostgreSQL plugin** — Railway will automatically set `DATABASE_URL` for the backend service.
+2. **Add a PostgreSQL plugin** — Railway will provide two connection URLs:
+   - `DATABASE_URL` — private internal network (preferred).
+   - `DATABASE_PUBLIC_URL` — public proxy (use if the private URL is unreachable).
+   
+   The backend automatically tries `DATABASE_URL` first and falls back to `DATABASE_PUBLIC_URL`.  Make sure the PostgreSQL plugin is **linked** to the backend service so Railway injects the variables, or copy the connection string from the plugin's **Connect** tab and set `DATABASE_URL` (or `DATABASE_PUBLIC_URL`) manually in the backend service's **Variables** tab.
 
 3. **Deploy the backend**:
    - Click **New → GitHub Repo** and select this repository.
@@ -174,7 +178,7 @@ Both the backend and frontend Dockerfiles are configured to read Railway's `PORT
      | `DJANGO_DEBUG` | `False` |
      | `DJANGO_ALLOWED_HOSTS` | `.up.railway.app` |
      | `CORS_ALLOWED_ORIGINS` | `https://<your-frontend>.up.railway.app` |
-     | `DATABASE_URL` | Set automatically by the PostgreSQL plugin |
+     | `DATABASE_URL` | Linked automatically when the Postgres plugin is connected to this service. If the backend logs show *"Database unavailable"*, copy the **public** URL from the plugin's **Connect** tab and set `DATABASE_PUBLIC_URL` instead. |
 
    - Railway detects the `Dockerfile`, builds, and runs the backend on the `PORT` it assigns.
 
