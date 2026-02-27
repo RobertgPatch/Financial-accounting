@@ -17,6 +17,7 @@ export default function Dashboard() {
   const [assets, setAssets] = useState([]);
   const [distributions, setDistributions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     Promise.all([getEntities(), getAssets(), getDistributions()])
@@ -25,19 +26,22 @@ export default function Dashboard() {
         setAssets(a.data.results || a.data || []);
         setDistributions(d.data.results || d.data || []);
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error('Dashboard data fetch failed:', err);
+        setError('Unable to load dashboard data. The server may be starting up — please try again in a moment.');
+      })
       .finally(() => setLoading(false));
   }, []);
 
   const currentYear = new Date().getFullYear();
-  const yearDists = distributions.filter(d => new Date(d.date).getFullYear() === currentYear);
+  const yearDists = distributions.filter(d => new Date(d.distribution_date).getFullYear() === currentYear);
   const totalAmount = yearDists.reduce((sum, d) => sum + parseFloat(d.total_amount || 0), 0);
 
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const monthlyData = months.map((month, i) => ({
     month,
     amount: yearDists
-      .filter(d => new Date(d.date).getMonth() === i)
+      .filter(d => new Date(d.distribution_date).getMonth() === i)
       .reduce((sum, d) => sum + parseFloat(d.total_amount || 0), 0)
   }));
 
@@ -51,13 +55,22 @@ export default function Dashboard() {
   const pieData = Object.entries(entityMap).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 6);
 
   const recentColumns = [
-    { header: 'Date', key: 'date', render: r => r.date ? format(parseISO(r.date), 'MMM dd, yyyy') : '-' },
+    { header: 'Date', key: 'distribution_date', render: r => r.distribution_date ? format(parseISO(r.distribution_date), 'MMM dd, yyyy') : '-' },
     { header: 'Asset', key: 'asset_name', render: r => r.asset_name || r.asset || '-' },
     { header: 'Type', key: 'distribution_type' },
     { header: 'Amount', key: 'total_amount', render: r => <span className="font-semibold text-emerald-600">{formatCurrency(r.total_amount)}</span> },
   ];
 
   if (loading) return <LoadingSpinner className="min-h-96" size="lg" />;
+
+  if (error) return (
+    <div className="flex flex-col items-center justify-center min-h-96 text-center p-6">
+      <p className="text-red-600 text-lg font-medium mb-4">{error}</p>
+      <button onClick={() => window.location.reload()} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+        Retry
+      </button>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
