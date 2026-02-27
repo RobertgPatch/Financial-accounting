@@ -6,6 +6,7 @@ import Table from '../components/ui/Table';
 import Badge from '../components/ui/Badge';
 import { PlusIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { getEntities, createEntity, updateEntity, deleteEntity } from '../api/entities';
+import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const typeColors = { individual: 'blue', company: 'purple', LLC: 'green', trust: 'yellow', partnership: 'orange', other: 'gray' };
@@ -24,7 +25,7 @@ export default function Entities() {
 
   const load = () => {
     setLoading(true);
-    getEntities().then(r => setEntities(r.data.results || r.data || [])).catch(() => setEntities([])).finally(() => setLoading(false));
+    getEntities().then(r => setEntities(toArray(r))).catch(() => setEntities([])).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);

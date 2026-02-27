@@ -11,6 +11,7 @@ import LoadingSpinner from '../components/ui/LoadingSpinner';
 import { generateReport, exportReport } from '../api/reports';
 import { getEntities } from '../api/entities';
 import { getAssets } from '../api/assets';
+import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
@@ -36,8 +37,8 @@ export default function Reports() {
   useEffect(() => {
     Promise.all([getEntities(), getAssets()])
       .then(([e, a]) => {
-        setEntities(e.data.results || e.data || []);
-        setAssets(a.data.results || a.data || []);
+        setEntities(toArray(e));
+        setAssets(toArray(a));
       })
       .catch(() => {});
   }, []);

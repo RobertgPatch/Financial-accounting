@@ -7,6 +7,7 @@ import { PlusIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { getOwnerships, createOwnership, updateOwnership, deleteOwnership } from '../api/ownerships';
 import { getEntities } from '../api/entities';
 import { getAssets } from '../api/assets';
+import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const emptyForm = { entity: '', asset: '', percentage: '', effective_date: '', notes: '' };
@@ -26,9 +27,9 @@ export default function Ownerships() {
     setLoading(true);
     Promise.all([getOwnerships(), getEntities(), getAssets()])
       .then(([o, e, a]) => {
-        setOwnerships(o.data.results || o.data || []);
-        setEntities(e.data.results || e.data || []);
-        setAssets(a.data.results || a.data || []);
+        setOwnerships(toArray(o));
+        setEntities(toArray(e));
+        setAssets(toArray(a));
       })
       .catch(() => {})
       .finally(() => setLoading(false));

@@ -6,6 +6,7 @@ import LoadingSpinner from '../components/ui/LoadingSpinner';
 import { getEntities } from '../api/entities';
 import { getAssets } from '../api/assets';
 import { getDistributions } from '../api/distributions';
+import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
@@ -22,9 +23,9 @@ export default function Dashboard() {
   useEffect(() => {
     Promise.all([getEntities(), getAssets(), getDistributions()])
       .then(([e, a, d]) => {
-        setEntities(e.data.results || e.data || []);
-        setAssets(a.data.results || a.data || []);
-        setDistributions(d.data.results || d.data || []);
+        setEntities(toArray(e));
+        setAssets(toArray(a));
+        setDistributions(toArray(d));
       })
       .catch((err) => {
         console.error('Dashboard data fetch failed:', err);

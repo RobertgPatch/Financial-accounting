@@ -9,6 +9,7 @@ import { getDistributions, createDistribution, deleteDistribution } from '../api
 import { getAssets } from '../api/assets';
 import { getOwnerships } from '../api/ownerships';
 import { getEntities } from '../api/entities';
+import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const distTypes = ['regular', 'special', 'return_of_capital', 'liquidating'];
@@ -32,10 +33,10 @@ export default function Distributions() {
     setLoading(true);
     Promise.all([getDistributions(), getAssets(), getOwnerships(), getEntities()])
       .then(([d, a, o, e]) => {
-        setDistributions(d.data.results || d.data || []);
-        setAssets(a.data.results || a.data || []);
-        setOwnerships(o.data.results || o.data || []);
-        setEntities(e.data.results || e.data || []);
+        setDistributions(toArray(d));
+        setAssets(toArray(a));
+        setOwnerships(toArray(o));
+        setEntities(toArray(e));
       })
       .catch(() => {})
       .finally(() => setLoading(false));
