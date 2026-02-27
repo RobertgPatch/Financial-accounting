@@ -36,8 +36,9 @@ export default function Reports() {
   useEffect(() => {
     Promise.all([getEntities(), getAssets()])
       .then(([e, a]) => {
-        setEntities(e.data.results || e.data || []);
-        setAssets(a.data.results || a.data || []);
+        const toArray = (res) => { const d = res.data?.results || res.data; return Array.isArray(d) ? d : []; };
+        setEntities(toArray(e));
+        setAssets(toArray(a));
       })
       .catch(() => {});
   }, []);

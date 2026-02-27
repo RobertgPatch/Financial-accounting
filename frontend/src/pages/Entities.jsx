@@ -24,7 +24,7 @@ export default function Entities() {
 
   const load = () => {
     setLoading(true);
-    getEntities().then(r => setEntities(r.data.results || r.data || [])).catch(() => setEntities([])).finally(() => setLoading(false));
+    getEntities().then(r => { const d = r.data?.results || r.data; setEntities(Array.isArray(d) ? d : []); }).catch(() => setEntities([])).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);

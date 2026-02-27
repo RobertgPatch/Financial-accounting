@@ -24,7 +24,7 @@ export default function Assets() {
 
   const load = () => {
     setLoading(true);
-    getAssets().then(r => setAssets(r.data.results || r.data || [])).catch(() => setAssets([])).finally(() => setLoading(false));
+    getAssets().then(r => { const d = r.data?.results || r.data; setAssets(Array.isArray(d) ? d : []); }).catch(() => setAssets([])).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);

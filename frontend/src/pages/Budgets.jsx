@@ -32,11 +32,12 @@ export default function Budgets() {
 
   const load = () => {
     setLoading(true);
+    const toArray = (res) => { const d = res.data?.results || res.data; return Array.isArray(d) ? d : []; };
     Promise.all([getBudgets(), getAssets(), getEntities()])
       .then(([b, a, e]) => {
-        setBudgets(b.data.results || b.data || []);
-        setAssets(a.data.results || a.data || []);
-        setEntities(e.data.results || e.data || []);
+        setBudgets(toArray(b));
+        setAssets(toArray(a));
+        setEntities(toArray(e));
       })
       .catch(() => {})
       .finally(() => setLoading(false));

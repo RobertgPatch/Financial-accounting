@@ -24,11 +24,12 @@ export default function Ownerships() {
 
   const load = () => {
     setLoading(true);
+    const toArray = (res) => { const d = res.data?.results || res.data; return Array.isArray(d) ? d : []; };
     Promise.all([getOwnerships(), getEntities(), getAssets()])
       .then(([o, e, a]) => {
-        setOwnerships(o.data.results || o.data || []);
-        setEntities(e.data.results || e.data || []);
-        setAssets(a.data.results || a.data || []);
+        setOwnerships(toArray(o));
+        setEntities(toArray(e));
+        setAssets(toArray(a));
       })
       .catch(() => {})
       .finally(() => setLoading(false));

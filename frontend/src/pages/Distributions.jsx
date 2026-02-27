@@ -30,12 +30,13 @@ export default function Distributions() {
 
   const load = () => {
     setLoading(true);
+    const toArray = (res) => { const d = res.data?.results || res.data; return Array.isArray(d) ? d : []; };
     Promise.all([getDistributions(), getAssets(), getOwnerships(), getEntities()])
       .then(([d, a, o, e]) => {
-        setDistributions(d.data.results || d.data || []);
-        setAssets(a.data.results || a.data || []);
-        setOwnerships(o.data.results || o.data || []);
-        setEntities(e.data.results || e.data || []);
+        setDistributions(toArray(d));
+        setAssets(toArray(a));
+        setOwnerships(toArray(o));
+        setEntities(toArray(e));
       })
       .catch(() => {})
       .finally(() => setLoading(false));

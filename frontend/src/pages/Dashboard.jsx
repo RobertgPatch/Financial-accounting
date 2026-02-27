@@ -20,11 +20,12 @@ export default function Dashboard() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    const toArray = (res) => { const d = res.data?.results || res.data; return Array.isArray(d) ? d : []; };
     Promise.all([getEntities(), getAssets(), getDistributions()])
       .then(([e, a, d]) => {
-        setEntities(e.data.results || e.data || []);
-        setAssets(a.data.results || a.data || []);
-        setDistributions(d.data.results || d.data || []);
+        setEntities(toArray(e));
+        setAssets(toArray(a));
+        setDistributions(toArray(d));
       })
       .catch((err) => {
         console.error('Dashboard data fetch failed:', err);
