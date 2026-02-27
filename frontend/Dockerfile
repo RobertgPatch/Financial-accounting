@@ -3,7 +3,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci && npm install serve
+RUN npm ci
 
 COPY . .
 
