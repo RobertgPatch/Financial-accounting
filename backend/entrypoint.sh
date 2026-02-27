@@ -15,9 +15,9 @@ if [ -z "$DATABASE_URL" ]; then
 fi
 
 echo "Waiting for database..."
+echo "  Hint: ensure DATABASE_URL (or DATABASE_PUBLIC_URL) is set and the database is reachable."
 until python -c 'import django; django.setup(); from django.db import connection; connection.ensure_connection()' 2>/dev/null; do
   echo "Database unavailable - retrying in 2s..."
-  echo "  Hint: ensure DATABASE_URL (or DATABASE_PUBLIC_URL) is set and the database is reachable."
   sleep 2
 done
 echo "Database is ready."

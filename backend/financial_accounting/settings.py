@@ -56,7 +56,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'financial_accounting.wsgi.application'
 
-_database_url = os.environ.get('DATABASE_URL') or os.environ.get('DATABASE_PUBLIC_URL')
+_database_url = os.environ.get('DATABASE_URL') or os.environ.get('DATABASE_PUBLIC_URL') or None
 DATABASES = {
     'default': dj_database_url.config(
         default=_database_url or f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
