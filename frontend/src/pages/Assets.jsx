@@ -6,6 +6,7 @@ import Table from '../components/ui/Table';
 import Badge from '../components/ui/Badge';
 import { PlusIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { getAssets, createAsset, updateAsset, deleteAsset } from '../api/assets';
+import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const typeColors = { property: 'green', stock: 'blue', fund: 'purple', bond: 'yellow', other: 'gray' };
@@ -24,7 +25,7 @@ export default function Assets() {
 
   const load = () => {
     setLoading(true);
-    getAssets().then(r => { const d = r.data?.results || r.data; setAssets(Array.isArray(d) ? d : []); }).catch(() => setAssets([])).finally(() => setLoading(false));
+    getAssets().then(r => setAssets(toArray(r))).catch(() => setAssets([])).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);

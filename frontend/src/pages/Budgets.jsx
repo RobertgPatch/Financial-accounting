@@ -8,6 +8,7 @@ import { Add, Delete, Edit, AccountBalance } from '@mui/icons-material';
 import { getBudgets, createBudget, updateBudget, deleteBudget } from '../api/budgets';
 import { getAssets } from '../api/assets';
 import { getEntities } from '../api/entities';
+import { toArray } from '../api/utils';
 
 const periodTypes = ['yearly', 'quarterly', 'monthly'];
 const formatCurrency = (v) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v || 0);
@@ -32,7 +33,6 @@ export default function Budgets() {
 
   const load = () => {
     setLoading(true);
-    const toArray = (res) => { const d = res.data?.results || res.data; return Array.isArray(d) ? d : []; };
     Promise.all([getBudgets(), getAssets(), getEntities()])
       .then(([b, a, e]) => {
         setBudgets(toArray(b));

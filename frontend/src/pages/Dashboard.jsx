@@ -6,6 +6,7 @@ import LoadingSpinner from '../components/ui/LoadingSpinner';
 import { getEntities } from '../api/entities';
 import { getAssets } from '../api/assets';
 import { getDistributions } from '../api/distributions';
+import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
@@ -20,7 +21,6 @@ export default function Dashboard() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    const toArray = (res) => { const d = res.data?.results || res.data; return Array.isArray(d) ? d : []; };
     Promise.all([getEntities(), getAssets(), getDistributions()])
       .then(([e, a, d]) => {
         setEntities(toArray(e));
