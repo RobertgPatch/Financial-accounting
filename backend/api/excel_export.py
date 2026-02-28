@@ -50,6 +50,15 @@ def export_distribution_report(report_data):
     _build_detail_sheet(wb, report_data)
     _build_asset_sheet(wb, report_data)
 
+    if report_data.get('budget_comparison'):
+        _build_budget_comparison_sheet(wb, report_data)
+
+    if report_data.get('yoy_comparison'):
+        _build_yoy_sheet(wb, report_data)
+
+    if report_data.get('retained_earnings'):
+        _build_retained_earnings_sheet(wb, report_data)
+
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -231,3 +240,249 @@ def _build_asset_sheet(wb, report_data):
 
     _auto_width(ws)
     ws.freeze_panes = 'A3'
+
+
+VARIANCE_POS_FILL = PatternFill(start_color='FFF3E0', end_color='FFF3E0', fill_type='solid')
+VARIANCE_NEG_FILL = PatternFill(start_color='E8F5E9', end_color='E8F5E9', fill_type='solid')
+
+
+def _build_budget_comparison_sheet(wb, report_data):
+    bc = report_data['budget_comparison']
+    ws = wb.create_sheet('Budget vs Actual')
+
+    ws.merge_cells('A1:F1')
+    ws['A1'] = f"Budget vs Actual — {bc['budget_name']}"
+    ws['A1'].font = TITLE_FONT
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 28
+
+    # Totals row
+    ws['A3'] = 'Total Budgeted:'
+    ws['A3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['B3'] = float(bc['total_budgeted'])
+    ws['B3'].number_format = '"$"#,##0.00'
+    ws['C3'] = 'Total Actual:'
+    ws['C3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['D3'] = float(bc['total_actual'])
+    ws['D3'].number_format = '"$"#,##0.00'
+    ws['E3'] = 'Variance:'
+    ws['E3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['F3'] = float(bc['total_variance'])
+    ws['F3'].number_format = '"$"#,##0.00'
+    ws['F3'].font = Font(name='Calibri', bold=True, size=11,
+                         color='ED6C02' if float(bc['total_variance']) >= 0 else '2E7D32')
+
+    # By Entity section
+    ws['A5'] = 'By Entity'
+    ws['A5'].font = Font(name='Calibri', bold=True, size=12, color='1F4E79')
+    headers = ['Entity', 'Budgeted', 'Actual', 'Variance', 'Variance %', 'Status']
+    _apply_header_row(ws, 6, headers)
+
+    row = 7
+    for i, item in enumerate(bc.get('by_entity', [])):
+        fill = ALT_ROW_FILL if i % 2 == 0 else WHITE_FILL
+        variance = float(item['variance'])
+        data = [
+            item['entity_name'],
+            float(item['budgeted']),
+            float(item['actual']),
+            variance,
+            f"{item['variance_pct']}%" if item['variance_pct'] else 'N/A',
+            'Over' if variance >= 0 else 'Under',
+        ]
+        for col, val in enumerate(data, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col in (2, 3, 4):
+                cell.number_format = '"$"#,##0.00'
+                cell.alignment = Alignment(horizontal='right')
+        row += 1
+
+    # By Asset section
+    row += 1
+    ws.cell(row=row, column=1, value='By Asset').font = Font(name='Calibri', bold=True, size=12, color='1F4E79')
+    row += 1
+    headers = ['Asset', 'Budgeted', 'Actual', 'Variance', 'Variance %', 'Status']
+    _apply_header_row(ws, row, headers)
+    row += 1
+
+    for i, item in enumerate(bc.get('by_asset', [])):
+        fill = ALT_ROW_FILL if i % 2 == 0 else WHITE_FILL
+        variance = float(item['variance'])
+        data = [
+            item['asset_name'],
+            float(item['budgeted']),
+            float(item['actual']),
+            variance,
+            f"{item['variance_pct']}%" if item['variance_pct'] else 'N/A',
+            'Over' if variance >= 0 else 'Under',
+        ]
+        for col, val in enumerate(data, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col in (2, 3, 4):
+                cell.number_format = '"$"#,##0.00'
+                cell.alignment = Alignment(horizontal='right')
+        row += 1
+
+    _auto_width(ws)
+    ws.freeze_panes = 'A7'
+
+
+def _build_yoy_sheet(wb, report_data):
+    yoy = report_data['yoy_comparison']
+    ws = wb.create_sheet('Year over Year')
+
+    ws.merge_cells('A1:F1')
+    ws['A1'] = f"Year-over-Year Comparison — {yoy['prior_year']} vs {yoy['current_year']}"
+    ws['A1'].font = TITLE_FONT
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 28
+
+    # Totals
+    ws['A3'] = f"{yoy['prior_year']} Total:"
+    ws['A3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['B3'] = float(yoy['total_prior'])
+    ws['B3'].number_format = '"$"#,##0.00'
+    ws['C3'] = f"{yoy['current_year']} Total:"
+    ws['C3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['D3'] = float(yoy['total_current'])
+    ws['D3'].number_format = '"$"#,##0.00'
+    ws['E3'] = 'Change:'
+    ws['E3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['F3'] = float(yoy['total_change'])
+    ws['F3'].number_format = '"$"#,##0.00'
+
+    # By Entity
+    ws['A5'] = 'By Entity'
+    ws['A5'].font = Font(name='Calibri', bold=True, size=12, color='1F4E79')
+    headers = ['Entity', f'{yoy["prior_year"]}', f'{yoy["current_year"]}', 'Change ($)', 'Change (%)', 'Trend']
+    _apply_header_row(ws, 6, headers)
+
+    row = 7
+    for i, item in enumerate(yoy.get('by_entity', [])):
+        fill = ALT_ROW_FILL if i % 2 == 0 else WHITE_FILL
+        change = float(item['change'])
+        data = [
+            item['entity_name'],
+            float(item['prior_amount']),
+            float(item['current_amount']),
+            change,
+            f"{item['change_pct']}%" if item['change_pct'] else 'N/A',
+            '↑' if change > 0 else ('↓' if change < 0 else '→'),
+        ]
+        for col, val in enumerate(data, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col in (2, 3, 4):
+                cell.number_format = '"$"#,##0.00'
+                cell.alignment = Alignment(horizontal='right')
+        row += 1
+
+    # By Asset
+    row += 1
+    ws.cell(row=row, column=1, value='By Asset').font = Font(name='Calibri', bold=True, size=12, color='1F4E79')
+    row += 1
+    headers = ['Asset', f'{yoy["prior_year"]}', f'{yoy["current_year"]}', 'Change ($)', 'Change (%)', 'Trend']
+    _apply_header_row(ws, row, headers)
+    row += 1
+
+    for i, item in enumerate(yoy.get('by_asset', [])):
+        fill = ALT_ROW_FILL if i % 2 == 0 else WHITE_FILL
+        change = float(item['change'])
+        data = [
+            item['asset_name'],
+            float(item['prior_amount']),
+            float(item['current_amount']),
+            change,
+            f"{item['change_pct']}%" if item['change_pct'] else 'N/A',
+            '↑' if change > 0 else ('↓' if change < 0 else '→'),
+        ]
+        for col, val in enumerate(data, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col in (2, 3, 4):
+                cell.number_format = '"$"#,##0.00'
+                cell.alignment = Alignment(horizontal='right')
+        row += 1
+
+    _auto_width(ws)
+    ws.freeze_panes = 'A7'
+
+
+def _build_retained_earnings_sheet(wb, report_data):
+    re_data = report_data['retained_earnings']
+    ws = wb.create_sheet('Retained Earnings')
+
+    ws.merge_cells('A1:E1')
+    ws['A1'] = f"Retained Earnings Rollforward — {re_data['year']}"
+    ws['A1'].font = TITLE_FONT
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 28
+
+    # Summary totals
+    ws['A3'] = 'Beginning Balance:'
+    ws['A3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['B3'] = float(re_data['total_beginning_balance'])
+    ws['B3'].number_format = '"$"#,##0.00'
+    ws['C3'] = f'{re_data["year"]} Distributions:'
+    ws['C3'].font = Font(name='Calibri', bold=True, size=11)
+    ws['D3'] = float(re_data['total_current_year'])
+    ws['D3'].number_format = '"$"#,##0.00'
+
+    ws['A4'] = 'Ending Balance:'
+    ws['A4'].font = Font(name='Calibri', bold=True, size=11, color='1F4E79')
+    ws['B4'] = float(re_data['total_ending_balance'])
+    ws['B4'].number_format = '"$"#,##0.00'
+    ws['B4'].font = Font(name='Calibri', bold=True, size=11, color='1F4E79')
+
+    headers = ['Entity', 'Beginning Balance', f'{re_data["year"]} Distributions', 'Ending Balance']
+    _apply_header_row(ws, 6, headers)
+
+    row = 7
+    for i, item in enumerate(re_data.get('by_entity', [])):
+        fill = ALT_ROW_FILL if i % 2 == 0 else WHITE_FILL
+        data = [
+            item['entity_name'],
+            float(item['beginning_balance']),
+            float(item['current_year_distributions']),
+            float(item['ending_balance']),
+        ]
+        for col, val in enumerate(data, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col in (2, 3, 4):
+                cell.number_format = '"$"#,##0.00'
+                cell.alignment = Alignment(horizontal='right')
+        row += 1
+
+    # Totals row
+    fill = PatternFill(start_color='E3F2FD', end_color='E3F2FD', fill_type='solid')
+    bold = Font(name='Calibri', bold=True, size=10)
+    totals = [
+        'Total',
+        float(re_data['total_beginning_balance']),
+        float(re_data['total_current_year']),
+        float(re_data['total_ending_balance']),
+    ]
+    for col, val in enumerate(totals, 1):
+        cell = ws.cell(row=row, column=col, value=val)
+        cell.font = bold
+        cell.fill = fill
+        cell.border = THIN_BORDER
+        if col in (2, 3, 4):
+            cell.number_format = '"$"#,##0.00'
+            cell.alignment = Alignment(horizontal='right')
+
+    _auto_width(ws)
+    ws.freeze_panes = 'A7'

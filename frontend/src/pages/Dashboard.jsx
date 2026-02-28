@@ -6,6 +6,7 @@ import LoadingSpinner from '../components/ui/LoadingSpinner';
 import { getEntities } from '../api/entities';
 import { getAssets } from '../api/assets';
 import { getDistributions } from '../api/distributions';
+import { getDashboardSummary } from '../api/reports';
 import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
@@ -17,15 +18,17 @@ export default function Dashboard() {
   const [entities, setEntities] = useState([]);
   const [assets, setAssets] = useState([]);
   const [distributions, setDistributions] = useState([]);
+  const [dashSummary, setDashSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    Promise.all([getEntities(), getAssets(), getDistributions()])
-      .then(([e, a, d]) => {
+    Promise.all([getEntities(), getAssets(), getDistributions(), getDashboardSummary().catch(() => null)])
+      .then(([e, a, d, s]) => {
         setEntities(toArray(e));
         setAssets(toArray(a));
         setDistributions(toArray(d));
+        if (s?.data) setDashSummary(s.data);
       })
       .catch((err) => {
         console.error('Dashboard data fetch failed:', err);
@@ -77,10 +80,10 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Total Entities', value: entities.length, color: 'blue', icon: '🏢' },
-          { label: 'Total Assets', value: assets.length, color: 'purple', icon: '💼' },
-          { label: 'Distributions (YTD)', value: yearDists.length, color: 'orange', icon: '📊' },
-          { label: 'Total Distributed (YTD)', value: formatCurrency(totalAmount), color: 'green', icon: '💰' },
+          { label: 'Total Entities', value: dashSummary?.entity_count ?? entities.length, color: 'blue', icon: '🏢' },
+          { label: 'Total Assets', value: dashSummary?.asset_count ?? assets.length, color: 'purple', icon: '💼' },
+          { label: 'Distributions (YTD)', value: dashSummary?.distribution_count ?? yearDists.length, color: 'orange', icon: '📊' },
+          { label: 'Total Distributed (YTD)', value: formatCurrency(dashSummary?.total_ytd ?? totalAmount), color: 'green', icon: '💰' },
         ].map(({ label, value, icon }) => (
           <div key={label} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
             <div className="flex items-center gap-3 mb-2">
@@ -91,6 +94,54 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {dashSummary && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {dashSummary.avg_distribution && parseFloat(dashSummary.avg_distribution) > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-2xl">📐</span>
+                <span className="text-sm font-medium text-gray-500">Avg Distribution</span>
+              </div>
+              <p className="text-xl font-bold text-gray-900">{formatCurrency(dashSummary.avg_distribution)}</p>
+            </div>
+          )}
+          {dashSummary.top_entity && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-2xl">🏆</span>
+                <span className="text-sm font-medium text-gray-500">Top Entity (YTD)</span>
+              </div>
+              <p className="text-lg font-bold text-gray-900">{dashSummary.top_entity.name}</p>
+              <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(dashSummary.top_entity.total)}</p>
+            </div>
+          )}
+          {dashSummary.top_asset && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-2xl">⭐</span>
+                <span className="text-sm font-medium text-gray-500">Top Asset (YTD)</span>
+              </div>
+              <p className="text-lg font-bold text-gray-900">{dashSummary.top_asset.name}</p>
+              <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(dashSummary.top_asset.total)}</p>
+            </div>
+          )}
+          {dashSummary.yoy_change_pct && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-2xl">{parseFloat(dashSummary.yoy_change) >= 0 ? '📈' : '📉'}</span>
+                <span className="text-sm font-medium text-gray-500">Year-over-Year</span>
+              </div>
+              <p className={`text-xl font-bold ${parseFloat(dashSummary.yoy_change) >= 0 ? 'text-emerald-600' : 'text-orange-600'}`}>
+                {parseFloat(dashSummary.yoy_change) >= 0 ? '+' : ''}{dashSummary.yoy_change_pct}%
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                {formatCurrency(dashSummary.yoy_change)} vs prior year ({formatCurrency(dashSummary.prior_year_total)})
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card title="Monthly Distributions" subtitle={`${currentYear}`}>

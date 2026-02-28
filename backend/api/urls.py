@@ -15,4 +15,5 @@ urlpatterns = [
     path('', include(router.urls)),
     path('reports/generate/', views.generate_report, name='report-generate'),
     path('reports/export/', views.export_report, name='report-export'),
+    path('reports/dashboard-summary/', views.dashboard_summary, name='dashboard-summary'),
 ]

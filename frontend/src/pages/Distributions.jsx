@@ -4,8 +4,8 @@ import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import Table from '../components/ui/Table';
 import Badge from '../components/ui/Badge';
-import { PlusIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
-import { getDistributions, createDistribution, deleteDistribution } from '../api/distributions';
+import { PlusIcon, PencilIcon, TrashIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { getDistributions, createDistribution, deleteDistribution, autoAllocateDistribution } from '../api/distributions';
 import { getAssets } from '../api/assets';
 import { getOwnerships } from '../api/ownerships';
 import { getEntities } from '../api/entities';
@@ -101,6 +101,16 @@ export default function Distributions() {
     try { await deleteDistribution(id); load(); } catch { alert('Delete failed'); }
   };
 
+  const handleAutoAllocate = async (id) => {
+    if (!window.confirm('Auto-allocate this distribution based on current ownership percentages? This will replace any existing allocations.')) return;
+    try {
+      await autoAllocateDistribution(id);
+      load();
+    } catch (e) {
+      alert(e.response?.data?.error || 'Auto-allocate failed. Make sure ownership records exist for this asset.');
+    }
+  };
+
   const getAssetName = (a) => {
     if (typeof a === 'object' && a?.name) return a.name;
     const found = assets.find(x => String(x.id) === String(a));
@@ -116,7 +126,12 @@ export default function Distributions() {
     {
       header: 'Actions', key: 'actions', render: r => (
         <div className="flex gap-2">
-          <Button variant="ghost" size="sm" onClick={() => handleDelete(r.id)} className="text-red-500 hover:text-red-700"><TrashIcon className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="sm" onClick={() => handleAutoAllocate(r.id)} className="text-blue-500 hover:text-blue-700" title="Auto-allocate based on ownership">
+            <ArrowPathIcon className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => handleDelete(r.id)} className="text-red-500 hover:text-red-700">
+            <TrashIcon className="h-4 w-4" />
+          </Button>
         </div>
       )
     },

@@ -1,7 +1,8 @@
 from django.http import HttpResponse
+from decimal import Decimal
 from datetime import date
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 
 from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation, Budget, BudgetLineItem
@@ -10,7 +11,7 @@ from .serializers import (
     DistributionSerializer, DistributionWriteSerializer, DistributionAllocationSerializer,
     BudgetSerializer, BudgetWriteSerializer, BudgetLineItemSerializer,
 )
-from .reports import generate_distribution_report
+from .reports import generate_distribution_report, generate_dashboard_summary
 from .excel_export import export_distribution_report
 
 
@@ -36,6 +37,57 @@ class DistributionViewSet(viewsets.ModelViewSet):
         if self.action in ('create', 'update', 'partial_update'):
             return DistributionWriteSerializer
         return DistributionSerializer
+
+    @action(detail=True, methods=['post'], url_path='auto-allocate')
+    def auto_allocate(self, request, pk=None):
+        """
+        Auto-allocate a distribution based on current ownership percentages.
+        Deletes existing allocations and creates new ones from EntityAssetOwnership.
+        """
+        distribution = self.get_object()
+        ownerships = EntityAssetOwnership.objects.filter(
+            asset=distribution.asset
+        ).select_related('entity').order_by('entity__name')
+
+        if not ownerships.exists():
+            return Response(
+                {'error': 'No ownership records found for this asset. Add ownerships first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        total_pct = sum(o.percentage for o in ownerships)
+        if total_pct <= 0:
+            return Response(
+                {'error': 'Total ownership percentage is zero.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Delete existing allocations and create fresh ones
+        distribution.allocations.all().delete()
+        allocations = []
+        remaining = distribution.total_amount
+        ownership_list = list(ownerships)
+
+        for i, ownership in enumerate(ownership_list):
+            pct = ownership.percentage
+            if i == len(ownership_list) - 1:
+                # Last allocation gets the remainder to avoid rounding issues
+                amount = remaining
+            else:
+                amount = (pct / total_pct * distribution.total_amount).quantize(Decimal('0.01'))
+                remaining -= amount
+
+            alloc = DistributionAllocation.objects.create(
+                distribution=distribution,
+                entity=ownership.entity,
+                amount=amount,
+                percentage=pct,
+            )
+            allocations.append(alloc)
+
+        # Return the updated distribution
+        serializer = DistributionSerializer(distribution)
+        return Response(serializer.data)
 
 
 class DistributionAllocationViewSet(viewsets.ModelViewSet):
@@ -100,3 +152,10 @@ def export_report(request):
     )
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
+
+
+@api_view(['GET'])
+def dashboard_summary(request):
+    """Quick KPI summary for the dashboard."""
+    data = generate_dashboard_summary()
+    return Response(data)
