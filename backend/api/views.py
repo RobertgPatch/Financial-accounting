@@ -98,7 +98,14 @@ class AssetViewSet(viewsets.ModelViewSet):
         """Set tags on an asset (replace all existing tags)."""
         asset = self.get_object()
         tag_ids = request.data.get('tag_ids', [])
-        tags = AssetTag.objects.filter(id__in=tag_ids)
+        tags = list(AssetTag.objects.filter(id__in=tag_ids))
+        if len(tags) != len(set(tag_ids)):
+            found_ids = {t.id for t in tags}
+            missing = [tid for tid in tag_ids if tid not in found_ids]
+            return Response(
+                {'error': f'Tag IDs not found: {missing}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         asset.tags.set(tags)
         serializer = self.get_serializer(asset)
         return Response(serializer.data)

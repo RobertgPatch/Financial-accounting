@@ -114,7 +114,7 @@ export default function Assets() {
         ))}
       </div>
     )},
-    { header: 'Current FMV', key: 'latest_fmv', render: r => r.latest_fmv ? <span className="font-medium">${parseFloat(r.latest_fmv).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> : <span className="text-gray-400">—</span> },
+    { header: 'Current FMV', key: 'latest_fmv', render: r => r.latest_fmv != null ? <span className="font-medium">${parseFloat(r.latest_fmv).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span> : <span className="text-gray-400">—</span> },
     { header: 'Created', key: 'created_at', render: r => r.created_at ? format(parseISO(r.created_at), 'MMM dd, yyyy') : '-' },
     {
       header: 'Actions', key: 'actions', render: r => (

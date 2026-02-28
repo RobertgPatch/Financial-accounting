@@ -10,58 +10,83 @@
 
 ### `GET /api/assets/{id}/performance/`
 
-Calculate TWR and IRR for a single asset.
+Calculate TWR and IRR for a single asset across all standard periods.
 
 **Query parameters**:
-| Parameter    | Type   | Default            | Description                                         |
-|-------------|--------|--------------------|----------------------------------------------------|
-| `period`    | string | `since_inception`  | One of: `ytd`, `1y`, `3y`, `5y`, `since_inception` |
-| `start_date`| date   | —                  | Custom start (ISO 8601). Overrides `period`.       |
-| `end_date`  | date   | today              | Custom end (ISO 8601). Overrides `period`.         |
+| Parameter    | Type   | Default | Description                                         |
+|-------------|--------|---------|-----------------------------------------------------|
+| `calc_date` | date   | today   | ISO 8601 date to use as the calculation end date.  |
 
 **Response** `200 OK`:
 ```json
 {
   "asset_id": 5,
   "asset_name": "Chase Brokerage",
-  "asset_type": "public_equity",
-  "period": {
-    "label": "1y",
-    "start_date": "2025-02-28",
-    "end_date": "2026-02-28"
-  },
   "metrics": {
-    "twr_pct": 12.45,
-    "irr_pct": 11.82,
-    "beginning_value": "100000.00",
-    "ending_value": "112450.00",
-    "net_distributions": "5000.00",
-    "net_contributions": "0.00",
-    "gain_loss": "17450.00"
+    "ytd": {
+      "label": "YTD",
+      "start_date": "2026-01-01",
+      "end_date": "2026-02-28",
+      "days": 58,
+      "twr": 0.0412,
+      "annualized_twr": 0.2634,
+      "irr": null,
+      "annualized_irr": null,
+      "data_quality": {
+        "snapshots_count": 3,
+        "has_gaps": false
+      }
+    },
+    "1y": {
+      "label": "1Y",
+      "start_date": "2025-02-28",
+      "end_date": "2026-02-28",
+      "days": 365,
+      "twr": 0.1245,
+      "annualized_twr": 0.1245,
+      "irr": 0.1182,
+      "annualized_irr": 0.1182,
+      "data_quality": {
+        "snapshots_count": 12,
+        "has_gaps": false
+      }
+    },
+    "3y": {
+      "label": "3Y",
+      "start_date": "2023-02-28",
+      "end_date": "2026-02-28",
+      "days": 1095,
+      "twr": null,
+      "annualized_twr": null,
+      "irr": null,
+      "annualized_irr": null,
+      "data_quality": {}
+    },
+    "since_inception": {
+      "label": "Since Inception",
+      "start_date": "2024-06-01",
+      "end_date": "2026-02-28",
+      "days": 637,
+      "twr": 0.0890,
+      "annualized_twr": 0.0510,
+      "irr": null,
+      "annualized_irr": null,
+      "data_quality": {
+        "snapshots_count": 8,
+        "has_gaps": false
+      }
+    }
   },
   "fmv_series": [
-    {
-      "date": "2025-02-28",
-      "value": "100000.00",
-      "source": "plaid"
-    },
-    {
-      "date": "2025-03-31",
-      "value": "103200.00",
-      "source": "plaid"
-    }
-  ],
-  "data_quality": {
-    "snapshots_count": 12,
-    "avg_gap_days": 30,
-    "has_gaps_over_90_days": false
-  }
+    {"snapshot_date": "2025-02-28", "value": "100000.00"},
+    {"snapshot_date": "2025-03-31", "value": "103200.00"}
+  ]
 }
 ```
 
 **Errors**:
 - `404` — Asset not found
-- `422` — Insufficient FMV data for calculation (< 2 snapshots in range)
+- `400` — Invalid `calc_date` format
 
 ---
 
@@ -69,38 +94,56 @@ Calculate TWR and IRR for a single asset.
 
 Calculate aggregated performance for all assets owned by an entity, weighted by ownership percentage.
 
-**Query parameters**: Same as asset performance.
+**Query parameters**:
+| Parameter    | Type   | Default | Description                                         |
+|-------------|--------|---------|-----------------------------------------------------|
+| `calc_date` | date   | today   | ISO 8601 date to use as the calculation end date.  |
 
 **Response** `200 OK`:
 ```json
 {
   "entity_id": 1,
-  "entity_name": "John Smith Trust",
-  "period": {
-    "label": "ytd",
-    "start_date": "2026-01-01",
-    "end_date": "2026-02-28"
+  "metrics": {
+    "ytd": {
+      "label": "YTD",
+      "start_date": "2026-01-01",
+      "end_date": "2026-02-28",
+      "days": 58,
+      "twr": 0.0832,
+      "irr": 0.0795
+    },
+    "1y": {
+      "label": "1Y",
+      "start_date": "2025-02-28",
+      "end_date": "2026-02-28",
+      "days": 365,
+      "twr": null,
+      "irr": null
+    },
+    "3y": {
+      "label": "3Y",
+      "start_date": "2023-02-28",
+      "end_date": "2026-02-28",
+      "days": 1095,
+      "twr": null,
+      "irr": null
+    },
+    "since_inception": {
+      "label": "Since Inception",
+      "start_date": "2024-06-01",
+      "end_date": "2026-02-28",
+      "days": 637,
+      "twr": null,
+      "irr": null
+    }
   },
-  "aggregate_metrics": {
-    "twr_pct": 8.32,
-    "irr_pct": 7.95,
-    "beginning_value": "5000000.00",
-    "ending_value": "5416000.00",
-    "total_distributions": "25000.00",
-    "total_contributions": "0.00",
-    "total_gain_loss": "441000.00"
-  },
-  "asset_breakdown": [
+  "assets": [
     {
       "asset_id": 5,
       "asset_name": "Chase Brokerage",
-      "asset_type": "public_equity",
-      "ownership_pct": "100.00",
-      "twr_pct": 12.45,
-      "irr_pct": 11.82,
-      "beginning_value": "100000.00",
-      "ending_value": "112450.00",
-      "weight_pct": 2.07
+      "ownership_pct": 100.0,
+      "current_fmv": "112450.00",
+      "entity_share": "112450.00"
     }
   ]
 }
@@ -108,72 +151,67 @@ Calculate aggregated performance for all assets owned by an entity, weighted by 
 
 **Errors**:
 - `404` — Entity not found
-- `422` — No assets with FMV data for this entity
+- `400` — Invalid `calc_date` format
 
 ---
 
 ### `GET /api/performance/summary/`
 
-Portfolio-wide performance summary across all entities (dashboard widget data).
+Portfolio-wide performance summary across all assets (dashboard widget data).
 
 **Query parameters**:
-| Parameter    | Type   | Default   | Description                    |
-|-------------|--------|-----------|---------------------------------|
-| `period`    | string | `ytd`     | Same options as asset endpoint  |
+| Parameter    | Type   | Default | Description                                         |
+|-------------|--------|---------|-----------------------------------------------------|
+| `calc_date` | date   | today   | ISO 8601 date to use as the calculation end date.  |
 
 **Response** `200 OK`:
 ```json
 {
-  "period": {
-    "label": "ytd",
-    "start_date": "2026-01-01",
-    "end_date": "2026-02-28"
+  "total_assets": 10,
+  "total_fmv": "15000000.0",
+  "by_asset_type": {
+    "public_equity": {"count": 3, "total_fmv": 4500000.0},
+    "real_estate": {"count": 4, "total_fmv": 6000000.0}
   },
-  "total_portfolio": {
-    "beginning_value": "15000000.00",
-    "ending_value": "15832000.00",
-    "twr_pct": 5.55,
-    "irr_pct": 5.12,
-    "net_gain_loss": "832000.00"
-  },
-  "by_asset_type": [
-    {
-      "asset_type": "public_equity",
-      "label": "Public Equity",
-      "current_value": "4500000.00",
-      "allocation_pct": 28.42,
-      "twr_pct": 8.20
-    },
-    {
-      "asset_type": "real_estate",
-      "label": "Real Estate",
-      "current_value": "6000000.00",
-      "allocation_pct": 37.90,
-      "twr_pct": 3.10
-    }
-  ],
   "top_performers": [
     {
       "asset_id": 5,
       "asset_name": "Chase Brokerage",
-      "twr_pct": 12.45
+      "asset_type": "public_equity",
+      "current_fmv": "112450.00",
+      "ytd_twr": 0.1245
     }
   ],
   "bottom_performers": [
     {
       "asset_id": 8,
       "asset_name": "Municipal Bond Fund",
-      "twr_pct": -1.20
+      "asset_type": "fixed_income",
+      "current_fmv": "50000.00",
+      "ytd_twr": -0.0120
+    }
+  ],
+  "all_assets": [
+    {
+      "asset_id": 5,
+      "asset_name": "Chase Brokerage",
+      "asset_type": "public_equity",
+      "current_fmv": "112450.00",
+      "ytd_twr": 0.1245
     }
   ]
 }
 ```
+
+**Errors**:
+- `400` — Invalid `calc_date` format
 
 ---
 
 ## Calculation Notes
 
 - **TWR**: Sub-period returns between snapshots, compounded geometrically. External cash flows (distributions/contributions on snapshot dates) used to split periods.
-- **IRR**: Newton's method XIRR on irregular-date cash flows. Returns `null` if solver doesn't converge in 100 iterations.
-- **Ownership weighting**: Entity performance uses `EntityAssetOwnership.ownership_percentage` as weight.
-- **Minimum data**: At least 2 FMV snapshots required in the selected period. Return 422 if insufficient.
+- **IRR**: Newton's method XIRR on irregular-date cash flows with Brent's method fallback. Returns `null` if solver doesn't converge.
+- **Periods**: Always returns metrics for `ytd`, `1y`, `3y`, and `since_inception`. A period's `twr`/`irr` will be `null` if there are fewer than 2 FMV snapshots in that range.
+- **Ownership weighting**: Entity performance uses value-weighted TWR (beginning-of-period FMV × ownership %) and combined XIRR across all owned assets.
+- **`since_inception`**: Uses the date of the first FMV snapshot for the asset (or earliest across all entity-owned assets for entity performance).

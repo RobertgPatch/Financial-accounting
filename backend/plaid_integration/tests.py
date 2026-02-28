@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 from decimal import Decimal
 import datetime
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework import status
 
@@ -17,6 +17,7 @@ class PlaidCreateLinkTokenTest(TestCase):
     def setUp(self):
         self.client = APIClient()
 
+    @override_settings(PLAID_CLIENT_ID='test-client-id', PLAID_SECRET='test-secret')
     @patch('plaid_integration.services.create_link_token')
     def test_create_link_token_success(self, mock_create):
         mock_create.return_value = {'link_token': 'link-sandbox-token', 'expiration': '2024-12-31T00:00:00Z'}
@@ -24,11 +25,19 @@ class PlaidCreateLinkTokenTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('link_token', response.data)
 
+    @override_settings(PLAID_CLIENT_ID='test-client-id', PLAID_SECRET='test-secret')
     @patch('plaid_integration.services.create_link_token')
     def test_create_link_token_failure(self, mock_create):
         mock_create.side_effect = Exception('Plaid error')
         response = self.client.post('/api/plaid/create-link-token/')
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn('error', response.data)
+
+    def test_create_link_token_not_configured(self):
+        """Returns 501 when Plaid credentials are not set."""
+        with self.settings(PLAID_CLIENT_ID='', PLAID_SECRET=''):
+            response = self.client.post('/api/plaid/create-link-token/')
+        self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
         self.assertIn('error', response.data)
 
 
@@ -124,6 +133,17 @@ class PlaidSyncBalancesTest(TestCase):
     def test_sync_item_not_found(self):
         response = self.client.post('/api/plaid/items/99999/sync/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    @patch('plaid_integration.services.get_balances')
+    def test_sync_skips_negative_balance(self, mock_balances):
+        """Negative balances (e.g., credit/overdraft) must not create FMV snapshots."""
+        mock_balances.return_value = [
+            {'account_id': 'acc_123', 'current_balance': -500.00},
+        ]
+        response = self.client.post(f'/api/plaid/items/{self.plaid_item.id}/sync/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(FMVSnapshot.objects.filter(asset=self.asset).count(), 0)
+        self.assertGreater(len(response.data['errors']), 0)
 
 
 class PlaidMapAssetTest(TestCase):

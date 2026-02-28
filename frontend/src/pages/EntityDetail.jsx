@@ -55,7 +55,7 @@ export default function EntityDetail() {
   };
 
   const fmtCurrency = (v) => {
-    if (!v) return <span className="text-gray-400">—</span>;
+    if (v == null) return <span className="text-gray-400">—</span>;
     return '$' + parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 2 });
   };
 
