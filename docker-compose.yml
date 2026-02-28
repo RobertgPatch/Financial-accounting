@@ -1,16 +1,20 @@
+# Local development only – do NOT use this configuration in production.
 version: '3.9'
 
 services:
   db:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "hba_file=/etc/pg/pg_hba.conf"]
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/pg_hba.conf:/etc/pg/pg_hba.conf:ro
     environment:
       - POSTGRES_DB=financial_accounting
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
+      - POSTGRES_HOST_AUTH_METHOD=trust
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
