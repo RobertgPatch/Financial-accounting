@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+ENV DJANGO_SETTINGS_MODULE=financial_accounting.settings
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
