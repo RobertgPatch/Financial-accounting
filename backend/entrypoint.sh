@@ -21,7 +21,7 @@ echo "  Hint: ensure DATABASE_URL (or DATABASE_PUBLIC_URL) is set and the databa
 attempts=0
 until python -c 'import django; django.setup(); from django.db import connection; connection.ensure_connection()' 2>/tmp/db_check_err.log; do
   attempts=$((attempts + 1))
-  if [ $((attempts % 5)) -eq 1 ]; then
+  if [ "$attempts" -eq 1 ] || [ $((attempts % 5)) -eq 0 ]; then
     echo "--- Last error output ---"
     cat /tmp/db_check_err.log
     echo "-------------------------"
