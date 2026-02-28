@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 import dj_database_url
 
@@ -63,28 +62,50 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'financial_accounting.wsgi.application'
 
-# Railway provides DATABASE_URL (private) and DATABASE_PUBLIC_URL (public proxy).
-# If only DATABASE_PUBLIC_URL is set, copy it into DATABASE_URL so that
-# dj_database_url.config() (which reads os.environ['DATABASE_URL']) finds it.
-if not os.environ.get('DATABASE_URL') and os.environ.get('DATABASE_PUBLIC_URL'):
-    os.environ['DATABASE_URL'] = os.environ['DATABASE_PUBLIC_URL']
+# ---------------------------------------------------------------------------
+# Database configuration
+# ---------------------------------------------------------------------------
+# Railway's Postgres plugin exposes individual PGXXX variables which are
+# immune to URL-parsing issues (passwords with #, ?, @, etc.).  We prefer
+# those.  Fall back to DATABASE_URL / DATABASE_PUBLIC_URL for local Docker
+# Compose or other hosts that set the standard URL variable.
+# ---------------------------------------------------------------------------
+_pg_host = os.environ.get('PGHOST')
+_pg_port = os.environ.get('PGPORT', '5432')
+_pg_name = os.environ.get('PGDATABASE')
+_pg_user = os.environ.get('PGUSER')
+_pg_pass = os.environ.get('PGPASSWORD')
 
-_database_url = os.environ.get('DATABASE_URL', '')
+if _pg_host and _pg_name and _pg_user:
+    # ---------- Railway (or any host providing individual PG vars) ----------
+    _is_internal = _pg_host.endswith('.railway.internal')
+    _options = {}
+    if not DEBUG and not _is_internal:
+        _options['sslmode'] = 'require'
 
-# Railway internal (.railway.internal) connections do NOT use SSL.
-# Public-proxy connections do.
-_require_ssl = False
-if not DEBUG and _database_url:
-    _db_host = urlparse(_database_url).hostname or ''
-    _require_ssl = not _db_host.endswith('.railway.internal')
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': _pg_name,
+            'USER': _pg_user,
+            'PASSWORD': _pg_pass or '',
+            'HOST': _pg_host,
+            'PORT': _pg_port,
+            'CONN_MAX_AGE': 600,
+            'OPTIONS': _options,
+        }
+    }
+else:
+    # ---------- Fallback: DATABASE_URL (local Docker Compose, etc.) ---------
+    if not os.environ.get('DATABASE_URL') and os.environ.get('DATABASE_PUBLIC_URL'):
+        os.environ['DATABASE_URL'] = os.environ['DATABASE_PUBLIC_URL']
 
-DATABASES = {
-    'default': dj_database_url.config(
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
-        conn_max_age=600,
-        ssl_require=_require_ssl,
-    )
-}
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+            conn_max_age=600,
+        )
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
