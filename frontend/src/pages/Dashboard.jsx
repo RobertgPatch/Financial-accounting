@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import Card from '../components/ui/Card';
 import Table from '../components/ui/Table';
@@ -11,8 +11,12 @@ import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+const DIST_TYPES = ['regular', 'special', 'return_of_capital', 'liquidating'];
 
 const formatCurrency = (v) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v || 0);
+
+/* ── helper: resolve an entity / asset id from a field that may be an object or raw id ── */
+const resolveId = (val) => String(typeof val === 'object' ? val?.id : val);
 
 export default function Dashboard() {
   const [entities, setEntities] = useState([]);
@@ -21,6 +25,12 @@ export default function Dashboard() {
   const [dashSummary, setDashSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  /* ── Filter state ── */
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear());
+  const [filterEntity, setFilterEntity] = useState('');
+  const [filterAsset, setFilterAsset] = useState('');
+  const [filterType, setFilterType] = useState('');
 
   useEffect(() => {
     Promise.all([getEntities(), getAssets(), getDistributions(), getDashboardSummary().catch(() => null)])
@@ -37,33 +47,107 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, []);
 
-  const currentYear = new Date().getFullYear();
-  const yearDists = distributions.filter(d => new Date(d.distribution_date).getFullYear() === currentYear);
-  const totalAmount = yearDists.reduce((sum, d) => sum + parseFloat(d.total_amount || 0), 0);
+  /* ── Available years derived from data ── */
+  const availableYears = useMemo(() => {
+    const years = new Set();
+    distributions.forEach(d => { if (d.distribution_date) years.add(new Date(d.distribution_date).getFullYear()); });
+    if (years.size === 0) years.add(new Date().getFullYear());
+    return Array.from(years).sort((a, b) => b - a);
+  }, [distributions]);
 
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const monthlyData = months.map((month, i) => ({
-    month,
-    amount: yearDists
-      .filter(d => new Date(d.distribution_date).getMonth() === i)
-      .reduce((sum, d) => sum + parseFloat(d.total_amount || 0), 0)
-  }));
-
-  const entityMap = {};
-  distributions.forEach(dist => {
-    (dist.allocations || []).forEach(alloc => {
-      const name = alloc.entity_name || alloc.entity || 'Unknown';
-      entityMap[name] = (entityMap[name] || 0) + parseFloat(alloc.amount || 0);
+  /* ── Filtered distributions (all cards / charts react to these) ── */
+  const filtered = useMemo(() => {
+    return distributions.filter(d => {
+      if (!d.distribution_date) return false;
+      if (new Date(d.distribution_date).getFullYear() !== filterYear) return false;
+      if (filterType && d.distribution_type !== filterType) return false;
+      if (filterAsset && resolveId(d.asset) !== String(filterAsset)) return false;
+      if (filterEntity) {
+        const hasEntity = (d.allocations || []).some(a => resolveId(a.entity) === String(filterEntity));
+        if (!hasEntity) return false;
+      }
+      return true;
     });
-  });
-  const pieData = Object.entries(entityMap).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 6);
+  }, [distributions, filterYear, filterEntity, filterAsset, filterType]);
 
+  /* ── KPI values ── */
+  const totalAmount = useMemo(() => filtered.reduce((s, d) => s + parseFloat(d.total_amount || 0), 0), [filtered]);
+  const avgAmount  = useMemo(() => (filtered.length ? totalAmount / filtered.length : 0), [filtered, totalAmount]);
+
+  const filteredEntityCount = useMemo(() => {
+    const ids = new Set();
+    filtered.forEach(d => (d.allocations || []).forEach(a => ids.add(resolveId(a.entity))));
+    return ids.size;
+  }, [filtered]);
+
+  const filteredAssetCount = useMemo(() => {
+    const ids = new Set();
+    filtered.forEach(d => ids.add(resolveId(d.asset)));
+    return ids.size;
+  }, [filtered]);
+
+  /* ── Monthly bar chart ── */
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthlyData = useMemo(() =>
+    monthNames.map((month, i) => ({
+      month,
+      amount: filtered.filter(d => new Date(d.distribution_date).getMonth() === i).reduce((s, d) => s + parseFloat(d.total_amount || 0), 0),
+    })), [filtered]);
+
+  /* ── Pie chart by entity ── */
+  const pieData = useMemo(() => {
+    const map = {};
+    filtered.forEach(dist => {
+      (dist.allocations || []).forEach(alloc => {
+        if (filterEntity && resolveId(alloc.entity) !== String(filterEntity)) return;
+        const name = alloc.entity_name || alloc.entity || 'Unknown';
+        map[name] = (map[name] || 0) + parseFloat(alloc.amount || 0);
+      });
+    });
+    return Object.entries(map).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 6);
+  }, [filtered, filterEntity]);
+
+  /* ── Top entity / asset from filtered data ── */
+  const topEntity = useMemo(() => {
+    const map = {};
+    filtered.forEach(dist => (dist.allocations || []).forEach(a => {
+      const name = a.entity_name || a.entity || 'Unknown';
+      map[name] = (map[name] || 0) + parseFloat(a.amount || 0);
+    }));
+    const entries = Object.entries(map);
+    if (!entries.length) return null;
+    const [name, total] = entries.sort((a, b) => b[1] - a[1])[0];
+    return { name, total };
+  }, [filtered]);
+
+  const topAsset = useMemo(() => {
+    const map = {};
+    filtered.forEach(dist => {
+      const name = (typeof dist.asset === 'object' ? dist.asset?.name : null) || dist.asset_name || assets.find(a => String(a.id) === resolveId(dist.asset))?.name || resolveId(dist.asset);
+      map[name] = (map[name] || 0) + parseFloat(dist.total_amount || 0);
+    });
+    const entries = Object.entries(map);
+    if (!entries.length) return null;
+    const [name, total] = entries.sort((a, b) => b[1] - a[1])[0];
+    return { name, total };
+  }, [filtered, assets]);
+
+  /* ── Table columns ── */
   const recentColumns = [
     { header: 'Date', key: 'distribution_date', render: r => r.distribution_date ? format(parseISO(r.distribution_date), 'MMM dd, yyyy') : '-' },
-    { header: 'Asset', key: 'asset_name', render: r => r.asset_name || r.asset || '-' },
-    { header: 'Type', key: 'distribution_type' },
+    { header: 'Asset', key: 'asset_name', render: r => {
+      return r.asset_name || (typeof r.asset === 'object' ? r.asset?.name : null) || assets.find(a => String(a.id) === resolveId(r.asset))?.name || '-';
+    }},
+    { header: 'Type', key: 'distribution_type', render: r => <span className="capitalize">{(r.distribution_type || '').replace(/_/g, ' ')}</span> },
     { header: 'Amount', key: 'total_amount', render: r => <span className="font-semibold text-emerald-600">{formatCurrency(r.total_amount)}</span> },
   ];
+
+  const hasActiveFilter = filterEntity || filterAsset || filterType;
+
+  const clearFilters = () => { setFilterEntity(''); setFilterAsset(''); setFilterType(''); };
+
+  /* ── Shared dropdown class ── */
+  const selectCls = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white';
 
   if (loading) return <LoadingSpinner className="min-h-96" size="lg" />;
 
@@ -78,12 +162,84 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {/* ══════════════ Filter Bar ══════════════ */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+        <div className="flex flex-wrap items-end gap-4">
+          {/* Year */}
+          <div className="flex-1 min-w-[120px]">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Year</label>
+            <select className={selectCls} value={filterYear} onChange={e => setFilterYear(parseInt(e.target.value))}>
+              {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+          {/* Entity */}
+          <div className="flex-1 min-w-[160px]">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Entity</label>
+            <select className={selectCls} value={filterEntity} onChange={e => setFilterEntity(e.target.value)}>
+              <option value="">All Entities</option>
+              {entities.map(en => <option key={en.id} value={en.id}>{en.name}</option>)}
+            </select>
+          </div>
+          {/* Asset */}
+          <div className="flex-1 min-w-[160px]">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Asset</label>
+            <select className={selectCls} value={filterAsset} onChange={e => setFilterAsset(e.target.value)}>
+              <option value="">All Assets</option>
+              {assets.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+          {/* Distribution Type */}
+          <div className="flex-1 min-w-[150px]">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Distribution Type</label>
+            <select className={selectCls} value={filterType} onChange={e => setFilterType(e.target.value)}>
+              <option value="">All Types</option>
+              {DIST_TYPES.map(t => <option key={t} value={t} className="capitalize">{t.replace(/_/g, ' ')}</option>)}
+            </select>
+          </div>
+          {/* Clear */}
+          {hasActiveFilter && (
+            <button onClick={clearFilters} className="px-3 py-2 text-sm text-gray-500 hover:text-red-600 border border-gray-300 rounded-lg hover:border-red-300 transition-colors whitespace-nowrap">
+              ✕ Clear
+            </button>
+          )}
+        </div>
+
+        {/* Active filter pills */}
+        {hasActiveFilter && (
+          <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-gray-100">
+            <span className="text-xs text-gray-400">Active:</span>
+            {filterEntity && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-xs font-medium">
+                Entity: {entities.find(e => String(e.id) === String(filterEntity))?.name || filterEntity}
+                <button onClick={() => setFilterEntity('')} className="ml-0.5 hover:text-blue-900">×</button>
+              </span>
+            )}
+            {filterAsset && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 text-xs font-medium">
+                Asset: {assets.find(a => String(a.id) === String(filterAsset))?.name || filterAsset}
+                <button onClick={() => setFilterAsset('')} className="ml-0.5 hover:text-purple-900">×</button>
+              </span>
+            )}
+            {filterType && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-medium capitalize">
+                Type: {filterType.replace(/_/g, ' ')}
+                <button onClick={() => setFilterType('')} className="ml-0.5 hover:text-amber-900">×</button>
+              </span>
+            )}
+            <span className="text-xs text-gray-400 ml-2">
+              {filtered.length} distribution{filtered.length !== 1 ? 's' : ''} matched
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* ══════════════ KPI Cards ══════════════ */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Total Entities', value: dashSummary?.entity_count ?? entities.length, color: 'blue', icon: '🏢' },
-          { label: 'Total Assets', value: dashSummary?.asset_count ?? assets.length, color: 'purple', icon: '💼' },
-          { label: 'Distributions (YTD)', value: dashSummary?.distribution_count ?? yearDists.length, color: 'orange', icon: '📊' },
-          { label: 'Total Distributed (YTD)', value: formatCurrency(dashSummary?.total_ytd ?? totalAmount), color: 'green', icon: '💰' },
+          { label: 'Entities', value: filterEntity ? 1 : filteredEntityCount, icon: '🏢' },
+          { label: 'Assets', value: filterAsset ? 1 : filteredAssetCount, icon: '💼' },
+          { label: `Distributions (${filterYear})`, value: filtered.length, icon: '📊' },
+          { label: `Total Distributed (${filterYear})`, value: formatCurrency(totalAmount), icon: '💰' },
         ].map(({ label, value, icon }) => (
           <div key={label} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
             <div className="flex items-center gap-3 mb-2">
@@ -95,56 +251,33 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {dashSummary && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {dashSummary.avg_distribution && parseFloat(dashSummary.avg_distribution) > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-              <div className="flex items-center gap-3 mb-2">
-                <span className="text-2xl">📐</span>
-                <span className="text-sm font-medium text-gray-500">Avg Distribution</span>
-              </div>
-              <p className="text-xl font-bold text-gray-900">{formatCurrency(dashSummary.avg_distribution)}</p>
-            </div>
-          )}
-          {dashSummary.top_entity && (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-              <div className="flex items-center gap-3 mb-2">
-                <span className="text-2xl">🏆</span>
-                <span className="text-sm font-medium text-gray-500">Top Entity (YTD)</span>
-              </div>
-              <p className="text-lg font-bold text-gray-900">{dashSummary.top_entity.name}</p>
-              <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(dashSummary.top_entity.total)}</p>
-            </div>
-          )}
-          {dashSummary.top_asset && (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-              <div className="flex items-center gap-3 mb-2">
-                <span className="text-2xl">⭐</span>
-                <span className="text-sm font-medium text-gray-500">Top Asset (YTD)</span>
-              </div>
-              <p className="text-lg font-bold text-gray-900">{dashSummary.top_asset.name}</p>
-              <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(dashSummary.top_asset.total)}</p>
-            </div>
-          )}
-          {dashSummary.yoy_change_pct && (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-              <div className="flex items-center gap-3 mb-2">
-                <span className="text-2xl">{parseFloat(dashSummary.yoy_change) >= 0 ? '📈' : '📉'}</span>
-                <span className="text-sm font-medium text-gray-500">Year-over-Year</span>
-              </div>
-              <p className={`text-xl font-bold ${parseFloat(dashSummary.yoy_change) >= 0 ? 'text-emerald-600' : 'text-orange-600'}`}>
-                {parseFloat(dashSummary.yoy_change) >= 0 ? '+' : ''}{dashSummary.yoy_change_pct}%
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                {formatCurrency(dashSummary.yoy_change)} vs prior year ({formatCurrency(dashSummary.prior_year_total)})
-              </p>
-            </div>
-          )}
-        </div>
-      )}
+      {/* ══════════════ Secondary KPI Cards ══════════════ */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {avgAmount > 0 && (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <div className="flex items-center gap-3 mb-2"><span className="text-2xl">📐</span><span className="text-sm font-medium text-gray-500">Avg Distribution</span></div>
+            <p className="text-xl font-bold text-gray-900">{formatCurrency(avgAmount)}</p>
+          </div>
+        )}
+        {topEntity && (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <div className="flex items-center gap-3 mb-2"><span className="text-2xl">🏆</span><span className="text-sm font-medium text-gray-500">Top Entity ({filterYear})</span></div>
+            <p className="text-lg font-bold text-gray-900">{topEntity.name}</p>
+            <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(topEntity.total)}</p>
+          </div>
+        )}
+        {topAsset && (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <div className="flex items-center gap-3 mb-2"><span className="text-2xl">⭐</span><span className="text-sm font-medium text-gray-500">Top Asset ({filterYear})</span></div>
+            <p className="text-lg font-bold text-gray-900">{topAsset.name}</p>
+            <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(topAsset.total)}</p>
+          </div>
+        )}
+      </div>
 
+      {/* ══════════════ Charts ══════════════ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card title="Monthly Distributions" subtitle={`${currentYear}`}>
+        <Card title="Monthly Distributions" subtitle={`${filterYear}`}>
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={monthlyData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -156,7 +289,7 @@ export default function Dashboard() {
           </ResponsiveContainer>
         </Card>
 
-        <Card title="Distribution by Entity">
+        <Card title="Distribution by Entity" subtitle={filterEntity ? entities.find(e => String(e.id) === String(filterEntity))?.name : 'All entities'}>
           {pieData.length === 0 ? (
             <div className="flex items-center justify-center h-60 text-gray-400">No allocation data available</div>
           ) : (
@@ -173,8 +306,9 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <Card title="Recent Distributions" subtitle="Last 5 distributions">
-        <Table columns={recentColumns} data={distributions.slice(0, 5)} loading={false} emptyMessage="No distributions yet" />
+      {/* ══════════════ Recent Distributions ══════════════ */}
+      <Card title="Recent Distributions" subtitle={`Last ${Math.min(filtered.length, 10)} of ${filtered.length} matched`}>
+        <Table columns={recentColumns} data={filtered.slice(0, 10)} loading={false} emptyMessage="No distributions match the selected filters." />
       </Card>
     </div>
   );
