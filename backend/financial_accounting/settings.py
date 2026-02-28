@@ -135,7 +135,7 @@ _cors_origins = os.environ.get(
     'CORS_ALLOWED_ORIGINS',
     'http://localhost:3000,http://localhost:5173',
 )
-CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(',') if o.strip()]
+CORS_ALLOWED_ORIGINS = [o.strip().rstrip('/') for o in _cors_origins.split(',') if o.strip()]
 
 # CSRF trusted origins – required when Railway proxies requests over HTTPS.
 CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
