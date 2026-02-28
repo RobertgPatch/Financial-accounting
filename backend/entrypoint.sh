@@ -14,10 +14,19 @@ if [ -z "$DATABASE_URL" ]; then
   echo "The app will fall back to SQLite. Set DATABASE_URL to your PostgreSQL connection string."
 fi
 
+export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-financial_accounting.settings}"
+
 echo "Waiting for database..."
 echo "  Hint: ensure DATABASE_URL (or DATABASE_PUBLIC_URL) is set and the database is reachable."
-until python -c 'import django; django.setup(); from django.db import connection; connection.ensure_connection()' 2>/dev/null; do
-  echo "Database unavailable - retrying in 2s..."
+attempts=0
+until python -c 'import django; django.setup(); from django.db import connection; connection.ensure_connection()' 2>/tmp/db_check_err.log; do
+  attempts=$((attempts + 1))
+  if [ "$attempts" -eq 1 ] || [ $((attempts % 5)) -eq 0 ]; then
+    echo "--- Last error output ---"
+    cat /tmp/db_check_err.log
+    echo "-------------------------"
+  fi
+  echo "Database unavailable - retrying in 2s... (attempt $attempts)"
   sleep 2
 done
 echo "Database is ready."
