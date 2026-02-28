@@ -1,4 +1,5 @@
 from django.http import HttpResponse
+from django.db import transaction
 from decimal import Decimal
 from datetime import date
 from rest_framework import viewsets, status
@@ -62,30 +63,32 @@ class DistributionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Delete existing allocations and create fresh ones
-        distribution.allocations.all().delete()
-        allocations = []
-        remaining = distribution.total_amount
-        ownership_list = list(ownerships)
+        # Delete existing allocations and create fresh ones within a single atomic operation
+        with transaction.atomic():
+            distribution.allocations.all().delete()
+            allocations = []
+            remaining = distribution.total_amount
+            ownership_list = list(ownerships)
 
-        for i, ownership in enumerate(ownership_list):
-            pct = ownership.percentage
-            if i == len(ownership_list) - 1:
-                # Last allocation gets the remainder to avoid rounding issues
-                amount = remaining
-            else:
-                amount = (pct / total_pct * distribution.total_amount).quantize(Decimal('0.01'))
-                remaining -= amount
+            for i, ownership in enumerate(ownership_list):
+                pct = ownership.percentage
+                if i == len(ownership_list) - 1:
+                    # Last allocation gets the remainder to avoid rounding issues
+                    amount = remaining
+                else:
+                    amount = (pct / total_pct * distribution.total_amount).quantize(Decimal('0.01'))
+                    remaining -= amount
 
-            alloc = DistributionAllocation.objects.create(
-                distribution=distribution,
-                entity=ownership.entity,
-                amount=amount,
-                percentage=pct,
-            )
-            allocations.append(alloc)
+                alloc = DistributionAllocation.objects.create(
+                    distribution=distribution,
+                    entity=ownership.entity,
+                    amount=amount,
+                    percentage=pct,
+                )
+                allocations.append(alloc)
 
-        # Return the updated distribution
+        # Reload to avoid returning a stale prefetch cache after delete/create
+        distribution = Distribution.objects.select_related('asset').prefetch_related('allocations__entity').get(pk=distribution.pk)
         serializer = DistributionSerializer(distribution)
         return Response(serializer.data)
 

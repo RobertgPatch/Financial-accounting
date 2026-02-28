@@ -477,13 +477,21 @@ def generate_dashboard_summary():
     yoy_change = total_ytd - prior_total
     yoy_pct = ((yoy_change / abs(prior_total)) * 100).quantize(Decimal('0.01')) if prior_total else None
 
-    # Monthly breakdown for sparkline
+    # Monthly breakdown for sparkline — single aggregation then fill missing months in Python
+    monthly_totals_qs = (
+        DistributionAllocation.objects
+        .filter(distribution__distribution_date__year=year)
+        .values('distribution__distribution_date__month')
+        .annotate(total=Sum('amount'))
+    )
+    monthly_totals_map = {
+        entry['distribution__distribution_date__month']: entry['total'] or Decimal('0.00')
+        for entry in monthly_totals_qs
+    }
+
     monthly = []
     for m in range(1, 13):
-        month_total = DistributionAllocation.objects.filter(
-            distribution__distribution_date__year=year,
-            distribution__distribution_date__month=m,
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        month_total = monthly_totals_map.get(m, Decimal('0.00'))
         monthly.append({'month': m, 'amount': str(month_total)})
 
     return {

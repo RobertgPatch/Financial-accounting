@@ -242,10 +242,6 @@ def _build_asset_sheet(wb, report_data):
     ws.freeze_panes = 'A3'
 
 
-VARIANCE_POS_FILL = PatternFill(start_color='FFF3E0', end_color='FFF3E0', fill_type='solid')
-VARIANCE_NEG_FILL = PatternFill(start_color='E8F5E9', end_color='E8F5E9', fill_type='solid')
-
-
 def _build_budget_comparison_sheet(wb, report_data):
     bc = report_data['budget_comparison']
     ws = wb.create_sheet('Budget vs Actual')

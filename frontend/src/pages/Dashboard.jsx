@@ -6,7 +6,6 @@ import LoadingSpinner from '../components/ui/LoadingSpinner';
 import { getEntities } from '../api/entities';
 import { getAssets } from '../api/assets';
 import { getDistributions } from '../api/distributions';
-import { getDashboardSummary } from '../api/reports';
 import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
@@ -22,7 +21,6 @@ export default function Dashboard() {
   const [entities, setEntities] = useState([]);
   const [assets, setAssets] = useState([]);
   const [distributions, setDistributions] = useState([]);
-  const [dashSummary, setDashSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -33,12 +31,11 @@ export default function Dashboard() {
   const [filterType, setFilterType] = useState('');
 
   useEffect(() => {
-    Promise.all([getEntities(), getAssets(), getDistributions(), getDashboardSummary().catch(() => null)])
-      .then(([e, a, d, s]) => {
+    Promise.all([getEntities(), getAssets(), getDistributions()])
+      .then(([e, a, d]) => {
         setEntities(toArray(e));
         setAssets(toArray(a));
         setDistributions(toArray(d));
-        if (s?.data) setDashSummary(s.data);
       })
       .catch((err) => {
         console.error('Dashboard data fetch failed:', err);
@@ -55,11 +52,17 @@ export default function Dashboard() {
     return Array.from(years).sort((a, b) => b - a);
   }, [distributions]);
 
+  /* ── Effective year: falls back to first available year if selected year has no data ── */
+  const effectiveFilterYear = useMemo(
+    () => (availableYears.length > 0 && !availableYears.includes(filterYear) ? availableYears[0] : filterYear),
+    [availableYears, filterYear],
+  );
+
   /* ── Filtered distributions (all cards / charts react to these) ── */
   const filtered = useMemo(() => {
     return distributions.filter(d => {
       if (!d.distribution_date) return false;
-      if (new Date(d.distribution_date).getFullYear() !== filterYear) return false;
+      if (new Date(d.distribution_date).getFullYear() !== effectiveFilterYear) return false;
       if (filterType && d.distribution_type !== filterType) return false;
       if (filterAsset && resolveId(d.asset) !== String(filterAsset)) return false;
       if (filterEntity) {
@@ -68,7 +71,7 @@ export default function Dashboard() {
       }
       return true;
     });
-  }, [distributions, filterYear, filterEntity, filterAsset, filterType]);
+  }, [distributions, effectiveFilterYear, filterEntity, filterAsset, filterType]);
 
   /* ── KPI values ── */
   const totalAmount = useMemo(() => filtered.reduce((s, d) => s + parseFloat(d.total_amount || 0), 0), [filtered]);
@@ -168,7 +171,7 @@ export default function Dashboard() {
           {/* Year */}
           <div className="flex-1 min-w-[120px]">
             <label className="block text-xs font-medium text-gray-500 mb-1">Year</label>
-            <select className={selectCls} value={filterYear} onChange={e => setFilterYear(parseInt(e.target.value))}>
+            <select className={selectCls} value={effectiveFilterYear} onChange={e => setFilterYear(parseInt(e.target.value))}>
               {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
@@ -238,8 +241,8 @@ export default function Dashboard() {
         {[
           { label: 'Entities', value: filterEntity ? 1 : filteredEntityCount, icon: '🏢' },
           { label: 'Assets', value: filterAsset ? 1 : filteredAssetCount, icon: '💼' },
-          { label: `Distributions (${filterYear})`, value: filtered.length, icon: '📊' },
-          { label: `Total Distributed (${filterYear})`, value: formatCurrency(totalAmount), icon: '💰' },
+          { label: `Distributions (${effectiveFilterYear})`, value: filtered.length, icon: '📊' },
+          { label: `Total Distributed (${effectiveFilterYear})`, value: formatCurrency(totalAmount), icon: '💰' },
         ].map(({ label, value, icon }) => (
           <div key={label} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
             <div className="flex items-center gap-3 mb-2">
@@ -261,14 +264,14 @@ export default function Dashboard() {
         )}
         {topEntity && (
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <div className="flex items-center gap-3 mb-2"><span className="text-2xl">🏆</span><span className="text-sm font-medium text-gray-500">Top Entity ({filterYear})</span></div>
+            <div className="flex items-center gap-3 mb-2"><span className="text-2xl">🏆</span><span className="text-sm font-medium text-gray-500">Top Entity ({effectiveFilterYear})</span></div>
             <p className="text-lg font-bold text-gray-900">{topEntity.name}</p>
             <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(topEntity.total)}</p>
           </div>
         )}
         {topAsset && (
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <div className="flex items-center gap-3 mb-2"><span className="text-2xl">⭐</span><span className="text-sm font-medium text-gray-500">Top Asset ({filterYear})</span></div>
+            <div className="flex items-center gap-3 mb-2"><span className="text-2xl">⭐</span><span className="text-sm font-medium text-gray-500">Top Asset ({effectiveFilterYear})</span></div>
             <p className="text-lg font-bold text-gray-900">{topAsset.name}</p>
             <p className="text-sm text-emerald-600 font-semibold">{formatCurrency(topAsset.total)}</p>
           </div>
@@ -277,7 +280,7 @@ export default function Dashboard() {
 
       {/* ══════════════ Charts ══════════════ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card title="Monthly Distributions" subtitle={`${filterYear}`}>
+        <Card title="Monthly Distributions" subtitle={`${effectiveFilterYear}`}>
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={monthlyData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />

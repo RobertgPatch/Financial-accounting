@@ -39,9 +39,9 @@ Comprehensive distribution reporting enhancements and an interactive, filter-dri
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/reports/yoy/` | Year-over-Year distribution comparison |
-| `GET` | `/api/reports/retained-earnings/` | Retained earnings rollforward report |
 | `GET` | `/api/reports/dashboard-summary/` | Dashboard KPI summary (totals, averages, top entity/asset, YoY %) |
+| `POST` | `/api/reports/generate/` | Generate distribution report (includes `yoy_comparison` and `retained_earnings` in response) |
+| `POST` | `/api/reports/export/` | Export distribution report as Excel (includes YoY and retained earnings sheets) |
 | `POST` | `/api/distributions/<id>/auto-allocate/` | Auto-allocate a distribution across entities by ownership percentage |
 
 ---
