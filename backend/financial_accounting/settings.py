@@ -18,6 +18,14 @@ _railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
 if _railway_domain and _railway_domain not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(_railway_domain)
 
+_railway_private = os.environ.get('RAILWAY_PRIVATE_DOMAIN')
+if _railway_private and _railway_private not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_railway_private)
+
+# Railway health checks use internal IPs/hostnames — allow all hosts on Railway.
+if os.environ.get('RAILWAY_ENVIRONMENT'):
+    ALLOWED_HOSTS = ['*']
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
