@@ -65,17 +65,18 @@ WSGI_APPLICATION = 'financial_accounting.wsgi.application'
 
 # Railway provides DATABASE_URL (private) and DATABASE_PUBLIC_URL (public proxy).
 # Passwords may contain special characters that break URL parsing, so we
-# re-encode the password component to be safe.
+# re-encode the password component to be safe.  We then write the sanitised
+# value back into os.environ *before* calling dj_database_url.config() because
+# config() reads os.environ['DATABASE_URL'] directly and ignores the `default`
+# kwarg when that env-var is already set.
 def _safe_database_url():
     raw = os.environ.get('DATABASE_URL') or os.environ.get('DATABASE_PUBLIC_URL') or ''
     if not raw:
         return None
     try:
         parsed = urlparse(raw)
-        # Re-encode the password in case it contains unescaped special chars
         if parsed.password:
             safe_password = quote(parsed.password, safe='')
-            # Reconstruct netloc with encoded password
             userinfo = f"{parsed.username}:{safe_password}"
             host_part = parsed.hostname
             if parsed.port:
@@ -95,17 +96,24 @@ def _safe_database_url():
 
 _database_url = _safe_database_url()
 
+# Write the sanitised URL back so dj_database_url.config() actually uses it.
+if _database_url:
+    os.environ['DATABASE_URL'] = _database_url
+
+# Railway internal (.railway.internal) connections do NOT use SSL.
+# Only public-proxy connections need sslmode=require.
+_require_ssl = False
+if not DEBUG and _database_url:
+    _db_host = urlparse(_database_url).hostname or ''
+    _require_ssl = not _db_host.endswith('.railway.internal')
+
 DATABASES = {
     'default': dj_database_url.config(
         default=_database_url or f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
-        ssl_require=not DEBUG,
+        ssl_require=_require_ssl,
     )
 }
-
-# Railway Postgres requires SSL; allow local Docker to skip it.
-if DEBUG:
-    DATABASES['default'].setdefault('OPTIONS', {}).pop('sslmode', None)
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
