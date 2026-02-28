@@ -12,6 +12,9 @@ fi
 if [ -z "$DATABASE_URL" ]; then
   echo "WARNING: Neither DATABASE_URL nor DATABASE_PUBLIC_URL is set."
   echo "The app will fall back to SQLite. Set DATABASE_URL to your PostgreSQL connection string."
+else
+  # Print a redacted version of the URL for debugging (hide password)
+  echo "DATABASE_URL is set (scheme: $(echo "$DATABASE_URL" | sed 's|://.*@|://***:***@|'))"
 fi
 
 export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-financial_accounting.settings}"
