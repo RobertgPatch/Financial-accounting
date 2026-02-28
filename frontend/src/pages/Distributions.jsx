@@ -4,7 +4,7 @@ import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import Table from '../components/ui/Table';
 import Badge from '../components/ui/Badge';
-import { PlusIcon, PencilIcon, TrashIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, TrashIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import { getDistributions, createDistribution, deleteDistribution, autoAllocateDistribution } from '../api/distributions';
 import { getAssets } from '../api/assets';
 import { getOwnerships } from '../api/ownerships';
