@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import date
 from django.db.models import Sum, Count, Avg, F, Q
-from .models import Distribution, DistributionAllocation, Entity, Asset, EntityAssetOwnership, Budget, BudgetLineItem
+from .models import Distribution, DistributionAllocation, Entity, Asset, EntityAssetOwnership, Budget, BudgetLineItem, FMVSnapshot
 
 
 def generate_distribution_report(
@@ -507,4 +507,135 @@ def generate_dashboard_summary():
         'yoy_change': str(yoy_change),
         'yoy_change_pct': str(yoy_pct) if yoy_pct is not None else None,
         'monthly': monthly,
+    }
+
+
+def generate_portfolio_by_class(entity_ids=None, tag_slugs=None):
+    """
+    Portfolio-by-class report showing allocation breakdown by asset type.
+    Optionally filtered by entity and/or tag.
+    """
+    assets = Asset.objects.prefetch_related('tags', 'fmv_snapshots', 'ownerships').all()
+
+    # Tag filtering
+    if tag_slugs:
+        for slug in tag_slugs:
+            assets = assets.filter(tags__slug=slug)
+        assets = assets.distinct()
+
+    # Build per-asset data with latest FMV
+    asset_data = []
+    for asset in assets:
+        latest = asset.fmv_snapshots.order_by('-snapshot_date').first()
+        if not latest:
+            continue
+
+        fmv = latest.value
+
+        # If entity filter, scale by ownership percentage
+        if entity_ids:
+            ownerships = EntityAssetOwnership.objects.filter(
+                asset=asset, entity_id__in=entity_ids
+            )
+            if not ownerships.exists():
+                continue
+            pct = sum(o.percentage for o in ownerships)
+            fmv = fmv * pct / 100
+
+        asset_data.append({
+            'asset_id': asset.id,
+            'asset_name': asset.name,
+            'asset_type': asset.asset_type,
+            'fmv': fmv,
+            'tags': [t.slug for t in asset.tags.all()],
+        })
+
+    # Group by asset type
+    by_type = {}
+    total_fmv = Decimal('0.00')
+    for a in asset_data:
+        t = a['asset_type']
+        if t not in by_type:
+            by_type[t] = {
+                'asset_type': t,
+                'total_fmv': Decimal('0.00'),
+                'asset_count': 0,
+                'assets': [],
+            }
+        by_type[t]['total_fmv'] += a['fmv']
+        by_type[t]['asset_count'] += 1
+        by_type[t]['assets'].append({
+            'asset_id': a['asset_id'],
+            'asset_name': a['asset_name'],
+            'fmv': str(a['fmv']),
+        })
+        total_fmv += a['fmv']
+
+    # Add allocation percentage
+    for group in by_type.values():
+        pct = (group['total_fmv'] / total_fmv * 100) if total_fmv > 0 else Decimal('0')
+        group['allocation_pct'] = str(pct.quantize(Decimal('0.01')))
+        group['total_fmv'] = str(group['total_fmv'])
+
+    result = sorted(by_type.values(), key=lambda x: -float(x['total_fmv']))
+
+    return {
+        'total_fmv': str(total_fmv),
+        'by_asset_type': result,
+        'filters': {
+            'entity_ids': entity_ids,
+            'tag_slugs': tag_slugs,
+        },
+    }
+
+
+def generate_net_worth_summary():
+    """
+    Net worth summary per entity (principal) and consolidated.
+    Uses latest FMV snapshots scaled by ownership percentages.
+    """
+    entities = Entity.objects.all()
+    result = []
+    consolidated = Decimal('0.00')
+
+    for entity in entities:
+        ownerships = EntityAssetOwnership.objects.filter(
+            entity=entity
+        ).select_related('asset')
+
+        entity_total = Decimal('0.00')
+        holdings = []
+
+        for ownership in ownerships:
+            latest = FMVSnapshot.objects.filter(
+                asset=ownership.asset
+            ).order_by('-snapshot_date').first()
+
+            if latest:
+                share = latest.value * ownership.percentage / 100
+                entity_total += share
+                holdings.append({
+                    'asset_id': ownership.asset.id,
+                    'asset_name': ownership.asset.name,
+                    'asset_type': ownership.asset.asset_type,
+                    'total_fmv': str(latest.value),
+                    'ownership_pct': str(ownership.percentage),
+                    'entity_share': str(share.quantize(Decimal('0.01'))),
+                })
+
+        consolidated += entity_total
+        result.append({
+            'entity_id': entity.id,
+            'entity_name': entity.name,
+            'entity_type': entity.entity_type,
+            'net_worth': str(entity_total.quantize(Decimal('0.01'))),
+            'holdings_count': len(holdings),
+            'holdings': holdings,
+        })
+
+    result.sort(key=lambda x: -float(x['net_worth']))
+
+    return {
+        'consolidated_net_worth': str(consolidated.quantize(Decimal('0.01'))),
+        'by_entity': result,
     }

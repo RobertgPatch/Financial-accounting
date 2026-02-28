@@ -1,0 +1,52 @@
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation
+*.md
+LICENSE
+docs/
+specs/
+.specify/
+.github/
+
+# CI/CD
+.github/
+
+# Node (handled by frontend Dockerfile)
+node_modules/
+frontend/dist/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

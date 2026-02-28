@@ -1,4 +1,37 @@
 from django.db import models
+from django.utils.text import slugify
+import re
+
+
+class AssetTag(models.Model):
+    """Reusable tag for classifying assets."""
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100, unique=True, blank=True)
+    color = models.CharField(max_length=7, default='#6B7280')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        # Case-insensitive unique name
+        qs = AssetTag.objects.filter(name__iexact=self.name)
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        if qs.exists():
+            raise ValidationError({'name': 'A tag with this name already exists.'})
+        # Validate hex color
+        if not re.match(r'^#[0-9A-Fa-f]{6}$', self.color):
+            raise ValidationError({'color': 'Color must be a valid hex color (e.g., #6B7280).'})
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.name)
+        super().save(*args, **kwargs)
 
 
 class Entity(models.Model):
@@ -28,10 +61,14 @@ class Entity(models.Model):
 
 class Asset(models.Model):
     ASSET_TYPE_CHOICES = [
-        ('property', 'Property'),
-        ('stock', 'Stock'),
-        ('fund', 'Fund'),
-        ('bond', 'Bond'),
+        ('real_estate', 'Real Estate'),
+        ('public_equity', 'Public Equity'),
+        ('private_equity', 'Private Equity'),
+        ('fixed_income', 'Fixed Income'),
+        ('cash', 'Cash & Equivalents'),
+        ('hedge_fund', 'Hedge Fund'),
+        ('crypto', 'Cryptocurrency'),
+        ('collectible', 'Collectible'),
         ('other', 'Other'),
     ]
 
@@ -40,6 +77,7 @@ class Asset(models.Model):
     description = models.TextField(blank=True, null=True)
     address = models.TextField(blank=True, null=True)
     ticker_symbol = models.CharField(max_length=20, blank=True, null=True)
+    tags = models.ManyToManyField(AssetTag, blank=True, related_name='assets')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -137,3 +175,33 @@ class BudgetLineItem(models.Model):
     def __str__(self):
         entity_str = f" → {self.entity.name}" if self.entity else ""
         return f"{self.budget.name}: {self.asset.name}{entity_str} = ${self.amount}"
+
+
+class FMVSnapshot(models.Model):
+    """Point-in-time fair market value record for an asset."""
+    SOURCE_CHOICES = [
+        ('manual', 'Manual'),
+        ('plaid', 'Plaid'),
+    ]
+
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='fmv_snapshots')
+    snapshot_date = models.DateField()
+    value = models.DecimalField(max_digits=15, decimal_places=2)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='manual')
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [('asset', 'snapshot_date')]
+        ordering = ['-snapshot_date']
+
+    def __str__(self):
+        return f"{self.asset.name} FMV ${self.value} on {self.snapshot_date}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        from datetime import date as date_cls
+        if self.value is not None and self.value < 0:
+            raise ValidationError({'value': 'FMV value must be >= 0.'})
+        if self.snapshot_date and self.snapshot_date > date_cls.today():
+            raise ValidationError({'snapshot_date': 'Snapshot date cannot be in the future.'})
