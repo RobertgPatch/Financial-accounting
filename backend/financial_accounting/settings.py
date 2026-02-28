@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, quote
+from urllib.parse import urlparse
 
 import dj_database_url
 
@@ -64,44 +64,15 @@ TEMPLATES = [
 WSGI_APPLICATION = 'financial_accounting.wsgi.application'
 
 # Railway provides DATABASE_URL (private) and DATABASE_PUBLIC_URL (public proxy).
-# Passwords may contain special characters that break URL parsing, so we
-# re-encode the password component to be safe.  We then write the sanitised
-# value back into os.environ *before* calling dj_database_url.config() because
-# config() reads os.environ['DATABASE_URL'] directly and ignores the `default`
-# kwarg when that env-var is already set.
-def _safe_database_url():
-    raw = os.environ.get('DATABASE_URL') or os.environ.get('DATABASE_PUBLIC_URL') or ''
-    if not raw:
-        return None
-    try:
-        parsed = urlparse(raw)
-        if parsed.password:
-            safe_password = quote(parsed.password, safe='')
-            userinfo = f"{parsed.username}:{safe_password}"
-            host_part = parsed.hostname
-            if parsed.port:
-                host_part = f"{host_part}:{parsed.port}"
-            safe_url = urlunparse((
-                parsed.scheme,
-                f"{userinfo}@{host_part}",
-                parsed.path,
-                parsed.params,
-                parsed.query,
-                parsed.fragment,
-            ))
-            return safe_url
-    except Exception:
-        pass
-    return raw
+# If only DATABASE_PUBLIC_URL is set, copy it into DATABASE_URL so that
+# dj_database_url.config() (which reads os.environ['DATABASE_URL']) finds it.
+if not os.environ.get('DATABASE_URL') and os.environ.get('DATABASE_PUBLIC_URL'):
+    os.environ['DATABASE_URL'] = os.environ['DATABASE_PUBLIC_URL']
 
-_database_url = _safe_database_url()
-
-# Write the sanitised URL back so dj_database_url.config() actually uses it.
-if _database_url:
-    os.environ['DATABASE_URL'] = _database_url
+_database_url = os.environ.get('DATABASE_URL', '')
 
 # Railway internal (.railway.internal) connections do NOT use SSL.
-# Only public-proxy connections need sslmode=require.
+# Public-proxy connections do.
 _require_ssl = False
 if not DEBUG and _database_url:
     _db_host = urlparse(_database_url).hostname or ''
@@ -109,7 +80,7 @@ if not DEBUG and _database_url:
 
 DATABASES = {
     'default': dj_database_url.config(
-        default=_database_url or f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
         ssl_require=_require_ssl,
     )

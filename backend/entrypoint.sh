@@ -21,6 +21,22 @@ export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-financial_accounting.se
 
 echo "Waiting for database..."
 echo "  Hint: ensure DATABASE_URL (or DATABASE_PUBLIC_URL) is set and the database is reachable."
+
+# Print the actual DB config Django will use (password masked) for debugging.
+python -c "
+import django, os; os.environ.setdefault('DJANGO_SETTINGS_MODULE','financial_accounting.settings'); django.setup()
+from django.conf import settings
+db = settings.DATABASES['default']
+print(f\"  ENGINE : {db.get('ENGINE')}\")
+print(f\"  HOST   : {db.get('HOST')}\")
+print(f\"  PORT   : {db.get('PORT')}\")
+print(f\"  NAME   : {db.get('NAME')}\")
+print(f\"  USER   : {db.get('USER')}\")
+pw = db.get('PASSWORD','')
+print(f\"  PASS   : {'*'*len(pw)} ({len(pw)} chars)\")
+print(f\"  OPTIONS: {db.get('OPTIONS',{})}\")
+" 2>/dev/null || echo "  (could not print DB config)"
+
 attempts=0
 until python -c 'import django; django.setup(); from django.db import connection; connection.ensure_connection()' 2>/tmp/db_check_err.log; do
   attempts=$((attempts + 1))
