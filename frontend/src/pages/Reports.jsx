@@ -85,6 +85,8 @@ export default function Reports() {
   const byAsset = report?.by_asset || [];
   const details = report?.detail || [];
   const budgetComparison = report?.budget_comparison || null;
+  const yoyComparison = report?.yoy_comparison || null;
+  const retainedEarnings = report?.retained_earnings || null;
 
   // Build timeline from detail data (group by month)
   const timelineMap = {};
@@ -427,6 +429,165 @@ export default function Reports() {
                       </TableContainer>
                     </Box>
                   )}
+                </Paper>
+              )}
+
+              {yoyComparison && (yoyComparison.by_entity?.length > 0 || yoyComparison.by_asset?.length > 0) && (
+                <Paper sx={{ p: 3 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                      📈 Year-over-Year — {yoyComparison.prior_year} vs {yoyComparison.current_year}
+                    </Typography>
+                    {yoyComparison.total_change_pct && (
+                      <Chip
+                        label={`${parseFloat(yoyComparison.total_change) >= 0 ? '+' : ''}${yoyComparison.total_change_pct}%`}
+                        color={parseFloat(yoyComparison.total_change) >= 0 ? 'success' : 'warning'}
+                        size="small"
+                      />
+                    )}
+                  </Box>
+
+                  <Box sx={{ display: 'flex', gap: 3, mb: 3, flexWrap: 'wrap' }}>
+                    {[
+                      { label: `${yoyComparison.prior_year} Total`, value: formatCurrency(yoyComparison.total_prior), color: '#757575' },
+                      { label: `${yoyComparison.current_year} Total`, value: formatCurrency(yoyComparison.total_current), color: '#1976d2' },
+                      { label: 'Change ($)', value: formatCurrency(yoyComparison.total_change), color: parseFloat(yoyComparison.total_change) >= 0 ? '#2e7d32' : '#ed6c02' },
+                      { label: 'Change (%)', value: yoyComparison.total_change_pct ? `${yoyComparison.total_change_pct}%` : 'N/A', color: parseFloat(yoyComparison.total_change) >= 0 ? '#2e7d32' : '#ed6c02' },
+                    ].map(({ label, value, color }) => (
+                      <Paper key={label} variant="outlined" sx={{ p: 2, flex: '1 1 150px', minWidth: 150 }}>
+                        <Typography variant="caption" color="text.secondary">{label}</Typography>
+                        <Typography variant="h6" sx={{ fontWeight: 700, color }}>{value}</Typography>
+                      </Paper>
+                    ))}
+                  </Box>
+
+                  {yoyComparison.by_entity?.length > 0 && (
+                    <Box sx={{ mb: 3 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>By Entity</Typography>
+                      <TableContainer component={Paper} variant="outlined">
+                        <MuiTable size="small">
+                          <TableHead>
+                            <TableRow sx={{ '& th': { fontWeight: 600, backgroundColor: '#f8fafc' } }}>
+                              <TableCell>Entity</TableCell>
+                              <TableCell align="right">{yoyComparison.prior_year}</TableCell>
+                              <TableCell align="right">{yoyComparison.current_year}</TableCell>
+                              <TableCell align="right">Change ($)</TableCell>
+                              <TableCell align="right">Change (%)</TableCell>
+                              <TableCell>Trend</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {yoyComparison.by_entity.map((row, i) => {
+                              const change = parseFloat(row.change);
+                              return (
+                                <TableRow key={i} hover>
+                                  <TableCell sx={{ fontWeight: 500 }}>{row.entity_name}</TableCell>
+                                  <TableCell align="right" sx={{ color: 'text.secondary' }}>{formatCurrency(row.prior_amount)}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600, color: 'primary.main' }}>{formatCurrency(row.current_amount)}</TableCell>
+                                  <TableCell align="right" sx={{ color: change >= 0 ? 'success.main' : 'warning.main', fontWeight: 600 }}>
+                                    {formatCurrency(row.change)}
+                                  </TableCell>
+                                  <TableCell align="right">{row.change_pct ? `${row.change_pct}%` : 'N/A'}</TableCell>
+                                  <TableCell>
+                                    <span style={{ fontSize: '1.2em' }}>{change > 0 ? '📈' : change < 0 ? '📉' : '➡️'}</span>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </MuiTable>
+                      </TableContainer>
+                    </Box>
+                  )}
+
+                  {yoyComparison.by_asset?.length > 0 && (
+                    <Box>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>By Asset</Typography>
+                      <TableContainer component={Paper} variant="outlined">
+                        <MuiTable size="small">
+                          <TableHead>
+                            <TableRow sx={{ '& th': { fontWeight: 600, backgroundColor: '#f8fafc' } }}>
+                              <TableCell>Asset</TableCell>
+                              <TableCell align="right">{yoyComparison.prior_year}</TableCell>
+                              <TableCell align="right">{yoyComparison.current_year}</TableCell>
+                              <TableCell align="right">Change ($)</TableCell>
+                              <TableCell align="right">Change (%)</TableCell>
+                              <TableCell>Trend</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {yoyComparison.by_asset.map((row, i) => {
+                              const change = parseFloat(row.change);
+                              return (
+                                <TableRow key={i} hover>
+                                  <TableCell sx={{ fontWeight: 500 }}>{row.asset_name}</TableCell>
+                                  <TableCell align="right" sx={{ color: 'text.secondary' }}>{formatCurrency(row.prior_amount)}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600, color: 'primary.main' }}>{formatCurrency(row.current_amount)}</TableCell>
+                                  <TableCell align="right" sx={{ color: change >= 0 ? 'success.main' : 'warning.main', fontWeight: 600 }}>
+                                    {formatCurrency(row.change)}
+                                  </TableCell>
+                                  <TableCell align="right">{row.change_pct ? `${row.change_pct}%` : 'N/A'}</TableCell>
+                                  <TableCell>
+                                    <span style={{ fontSize: '1.2em' }}>{change > 0 ? '📈' : change < 0 ? '📉' : '➡️'}</span>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </MuiTable>
+                      </TableContainer>
+                    </Box>
+                  )}
+                </Paper>
+              )}
+
+              {retainedEarnings && retainedEarnings.by_entity?.length > 0 && (
+                <Paper sx={{ p: 3 }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
+                    📒 Retained Earnings Rollforward — {retainedEarnings.year}
+                  </Typography>
+
+                  <Box sx={{ display: 'flex', gap: 3, mb: 3, flexWrap: 'wrap' }}>
+                    {[
+                      { label: 'Beginning Balance', value: formatCurrency(retainedEarnings.total_beginning_balance), color: '#757575' },
+                      { label: `${retainedEarnings.year} Distributions`, value: formatCurrency(retainedEarnings.total_current_year), color: '#2e7d32' },
+                      { label: 'Ending Balance', value: formatCurrency(retainedEarnings.total_ending_balance), color: '#1F4E79' },
+                    ].map(({ label, value, color }) => (
+                      <Paper key={label} variant="outlined" sx={{ p: 2, flex: '1 1 150px', minWidth: 150 }}>
+                        <Typography variant="caption" color="text.secondary">{label}</Typography>
+                        <Typography variant="h6" sx={{ fontWeight: 700, color }}>{value}</Typography>
+                      </Paper>
+                    ))}
+                  </Box>
+
+                  <TableContainer component={Paper} variant="outlined">
+                    <MuiTable size="small">
+                      <TableHead>
+                        <TableRow sx={{ '& th': { fontWeight: 600, backgroundColor: '#f8fafc' } }}>
+                          <TableCell>Entity</TableCell>
+                          <TableCell align="right">Beginning Balance</TableCell>
+                          <TableCell align="right">{retainedEarnings.year} Distributions</TableCell>
+                          <TableCell align="right">Ending Balance</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {retainedEarnings.by_entity.map((row, i) => (
+                          <TableRow key={i} hover>
+                            <TableCell sx={{ fontWeight: 500 }}>{row.entity_name}</TableCell>
+                            <TableCell align="right" sx={{ color: 'text.secondary' }}>{formatCurrency(row.beginning_balance)}</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 600, color: 'success.main' }}>{formatCurrency(row.current_year_distributions)}</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 700, color: '#1F4E79' }}>{formatCurrency(row.ending_balance)}</TableCell>
+                          </TableRow>
+                        ))}
+                        <TableRow sx={{ backgroundColor: '#e3f2fd' }}>
+                          <TableCell sx={{ fontWeight: 700 }}>Total</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(retainedEarnings.total_beginning_balance)}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>{formatCurrency(retainedEarnings.total_current_year)}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700, color: '#1F4E79' }}>{formatCurrency(retainedEarnings.total_ending_balance)}</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </MuiTable>
+                  </TableContainer>
                 </Paper>
               )}
 

@@ -255,6 +255,104 @@ class BudgetAPITest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
 
 
+class AutoAllocateTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.asset = Asset.objects.create(name='Auto Alloc Property', asset_type='property')
+        self.entity_a = Entity.objects.create(name='Entity A', entity_type='LLC')
+        self.entity_b = Entity.objects.create(name='Entity B', entity_type='LLC')
+        self.dist = Distribution.objects.create(
+            asset=self.asset,
+            distribution_date=datetime.date(2024, 6, 1),
+            total_amount=Decimal('1000.00'),
+            distribution_type='regular',
+        )
+
+    def test_auto_allocate_success(self):
+        EntityAssetOwnership.objects.create(
+            entity=self.entity_a, asset=self.asset,
+            percentage=Decimal('60.0000'), effective_date=datetime.date(2024, 1, 1),
+        )
+        EntityAssetOwnership.objects.create(
+            entity=self.entity_b, asset=self.asset,
+            percentage=Decimal('40.0000'), effective_date=datetime.date(2024, 1, 1),
+        )
+        response = self.client.post(f'/api/distributions/{self.dist.id}/auto-allocate/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        allocations = response.data['allocations']
+        self.assertEqual(len(allocations), 2)
+        total = sum(Decimal(a['amount']) for a in allocations)
+        self.assertEqual(total, self.dist.total_amount)
+
+    def test_auto_allocate_no_ownerships_returns_400(self):
+        response = self.client.post(f'/api/distributions/{self.dist.id}/auto-allocate/', format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+
+class YoYAndRetainedEarningsReportTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.entity = Entity.objects.create(name='YoY Entity', entity_type='LLC')
+        self.asset = Asset.objects.create(name='YoY Property', asset_type='property')
+
+        # Prior year distribution (2023)
+        dist_prior = Distribution.objects.create(
+            asset=self.asset,
+            distribution_date=datetime.date(2023, 6, 15),
+            total_amount=Decimal('8000.00'),
+            distribution_type='regular',
+        )
+        DistributionAllocation.objects.create(
+            distribution=dist_prior, entity=self.entity,
+            amount=Decimal('8000.00'), percentage=Decimal('100.0000'),
+        )
+
+        # Current year distribution (2024)
+        dist_current = Distribution.objects.create(
+            asset=self.asset,
+            distribution_date=datetime.date(2024, 6, 15),
+            total_amount=Decimal('10000.00'),
+            distribution_type='regular',
+        )
+        DistributionAllocation.objects.create(
+            distribution=dist_current, entity=self.entity,
+            amount=Decimal('10000.00'), percentage=Decimal('100.0000'),
+        )
+
+    def test_report_includes_yoy_comparison(self):
+        data = {'period_type': 'yearly', 'year': 2024}
+        response = self.client.post('/api/reports/generate/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        yoy = response.data['yoy_comparison']
+        self.assertIsNotNone(yoy)
+        self.assertEqual(yoy['current_year'], 2024)
+        self.assertEqual(yoy['prior_year'], 2023)
+        self.assertEqual(yoy['total_current'], '10000.00')
+        self.assertEqual(yoy['total_prior'], '8000.00')
+        self.assertEqual(yoy['total_change'], '2000.00')
+        self.assertIsNotNone(yoy['total_change_pct'])
+        self.assertIn('by_entity', yoy)
+        self.assertIn('by_asset', yoy)
+
+    def test_report_includes_retained_earnings(self):
+        data = {'period_type': 'yearly', 'year': 2024}
+        response = self.client.post('/api/reports/generate/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        re = response.data['retained_earnings']
+        self.assertIsNotNone(re)
+        self.assertEqual(re['year'], 2024)
+        self.assertIn('by_entity', re)
+        entity_row = next((r for r in re['by_entity'] if r['entity_name'] == 'YoY Entity'), None)
+        self.assertIsNotNone(entity_row)
+        self.assertEqual(entity_row['beginning_balance'], '8000.00')
+        self.assertEqual(entity_row['current_year_distributions'], '10000.00')
+        self.assertEqual(entity_row['ending_balance'], '18000.00')
+        self.assertEqual(re['total_beginning_balance'], '8000.00')
+        self.assertEqual(re['total_current_year'], '10000.00')
+        self.assertEqual(re['total_ending_balance'], '18000.00')
+
+
 class BudgetVsActualReportTest(TestCase):
     def setUp(self):
         self.client = APIClient()
