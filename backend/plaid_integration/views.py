@@ -151,6 +151,11 @@ def sync_balances(request, item_id):
 
             current_balance = balance_data.get('current_balance')
             if current_balance is not None:
+                if Decimal(str(current_balance)) < 0:
+                    errors.append(
+                        f"Skipped account {balance_data['account_id']}: negative balance ({current_balance}) not valid for FMV"
+                    )
+                    continue
                 account.current_balance = Decimal(str(current_balance))
                 account.last_synced = now
                 account.save()

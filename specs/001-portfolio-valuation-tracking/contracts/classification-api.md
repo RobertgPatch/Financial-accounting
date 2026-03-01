@@ -169,50 +169,51 @@ Assign tags to an asset.
 Portfolio allocation breakdown by asset type (for pie/donut chart on dashboard).
 
 **Query parameters**:
-| Parameter   | Type   | Default | Description                        |
-|------------|--------|---------|------------------------------------|
-| `entity_id`| int    | —       | Filter by entity (all if omitted)  |
-| `tag`      | string | —       | Filter by tag slug                 |
+| Parameter   | Type   | Default | Description                                         |
+|------------|--------|---------|-----------------------------------------------------|
+| `entity_id`| int    | —       | Filter by entity (repeatable; all if omitted)      |
+| `tag`      | string | —       | Filter by tag slug (repeatable; all if omitted)    |
 
 **Response** `200 OK`:
 ```json
 {
-  "total_value": "15000000.00",
-  "as_of_date": "2026-02-28",
-  "allocations": [
+  "total_fmv": "15000000.00",
+  "by_asset_type": [
     {
       "asset_type": "real_estate",
-      "label": "Real Estate",
-      "total_value": "6000000.00",
-      "allocation_pct": 40.0,
+      "total_fmv": "6000000.00",
       "asset_count": 3,
+      "allocation_pct": "40.00",
       "assets": [
         {
-          "id": 1,
-          "name": "123 Main St",
-          "value": "2500000.00",
-          "pct_of_class": 41.67
+          "asset_id": 1,
+          "asset_name": "123 Main St",
+          "fmv": "2500000.00"
         }
       ]
     },
     {
       "asset_type": "public_equity",
-      "label": "Public Equity",
-      "total_value": "4500000.00",
-      "allocation_pct": 30.0,
+      "total_fmv": "4500000.00",
       "asset_count": 5,
+      "allocation_pct": "30.00",
       "assets": [
         {
-          "id": 5,
-          "name": "Chase Brokerage",
-          "value": "250000.00",
-          "pct_of_class": 5.56
+          "asset_id": 5,
+          "asset_name": "Chase Brokerage",
+          "fmv": "250000.00"
         }
       ]
     }
-  ]
+  ],
+  "filters": {
+    "entity_ids": [1],
+    "tag_slugs": ["growth"]
+  }
 }
 ```
+
+> **Note**: `by_asset_type` is sorted descending by `total_fmv`. `allocation_pct` is a string-formatted decimal (2 dp). Assets with no FMV snapshots are excluded.
 
 ---
 
