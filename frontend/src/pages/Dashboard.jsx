@@ -6,6 +6,7 @@ import LoadingSpinner from '../components/ui/LoadingSpinner';
 import { getEntities } from '../api/entities';
 import { getAssets } from '../api/assets';
 import { getDistributions } from '../api/distributions';
+import { getDashboardSummary, getPortfolioByClass } from '../api/reports';
 import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
 
@@ -21,6 +22,8 @@ export default function Dashboard() {
   const [entities, setEntities] = useState([]);
   const [assets, setAssets] = useState([]);
   const [distributions, setDistributions] = useState([]);
+  const [netWorth, setNetWorth] = useState(null);
+  const [portfolioByClass, setPortfolioByClass] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -42,6 +45,17 @@ export default function Dashboard() {
         setError('Unable to load dashboard data. The server may be starting up — please try again in a moment.');
       })
       .finally(() => setLoading(false));
+
+    // Load net worth and portfolio-by-class in background
+    getDashboardSummary()
+      .then((res) => {
+        const data = res?.data || res;
+        setNetWorth(data?.net_worth || null);
+      })
+      .catch(() => {});
+    getPortfolioByClass()
+      .then((res) => setPortfolioByClass(res?.data || res))
+      .catch(() => {});
   }, []);
 
   /* ── Available years derived from data ── */
@@ -278,6 +292,31 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* ══════════════ Net Worth Cards ══════════════ */}
+      {netWorth && (
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">💎 Net Worth</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Per-principal cards */}
+            {(netWorth.by_entity || []).map((ent) => (
+              <div key={ent.entity_id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-gray-500">{ent.entity_name}</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 capitalize">{ent.entity_type}</span>
+                </div>
+                <p className="text-2xl font-bold text-gray-900">{formatCurrency(ent.net_worth)}</p>
+                <p className="text-xs text-gray-400 mt-1">{ent.holdings_count} holding{ent.holdings_count !== 1 ? 's' : ''}</p>
+              </div>
+            ))}
+            {/* Consolidated card */}
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200 shadow-sm p-5">
+              <span className="text-sm font-medium text-blue-700">Consolidated Net Worth</span>
+              <p className="text-2xl font-bold text-blue-900 mt-1">{formatCurrency(netWorth.consolidated_net_worth)}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ══════════════ Charts ══════════════ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card title="Monthly Distributions" subtitle={`${effectiveFilterYear}`}>
@@ -308,6 +347,52 @@ export default function Dashboard() {
           )}
         </Card>
       </div>
+
+      {/* ══════════════ Portfolio by Asset Class ══════════════ */}
+      {portfolioByClass && portfolioByClass.by_asset_type?.length > 0 && (
+        <Card title="Portfolio by Asset Class" subtitle={`Total FMV: ${formatCurrency(portfolioByClass.total_fmv)}`}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+            <ResponsiveContainer width="100%" height={280}>
+              <PieChart>
+                <Pie
+                  data={portfolioByClass.by_asset_type.map((t) => ({
+                    name: t.asset_type.replace(/_/g, ' '),
+                    value: parseFloat(t.total_fmv),
+                  }))}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={60}
+                  outerRadius={100}
+                  label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
+                  labelLine={false}
+                >
+                  {portfolioByClass.by_asset_type.map((_, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(v) => formatCurrency(v)} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="space-y-2">
+              {portfolioByClass.by_asset_type.map((t, i) => (
+                <div key={t.asset_type} className="flex items-center justify-between py-1 border-b border-gray-50">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+                    <span className="text-sm text-gray-700 capitalize">{t.asset_type.replace(/_/g, ' ')}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-sm font-medium text-gray-900">{formatCurrency(t.total_fmv)}</span>
+                    <span className="text-xs text-gray-400 ml-2">({t.allocation_pct}%)</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* ══════════════ Recent Distributions ══════════════ */}
       <Card title="Recent Distributions" subtitle={`Last ${Math.min(filtered.length, 10)} of ${filtered.length} matched`}>

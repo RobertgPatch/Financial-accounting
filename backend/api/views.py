@@ -6,14 +6,20 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 
-from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation, Budget, BudgetLineItem
+from .models import (
+    Entity, Asset, EntityAssetOwnership, Distribution,
+    DistributionAllocation, Budget, BudgetLineItem,
+    AssetTag, FMVSnapshot,
+)
 from .serializers import (
     EntitySerializer, AssetSerializer, EntityAssetOwnershipSerializer,
     DistributionSerializer, DistributionWriteSerializer, DistributionAllocationSerializer,
     BudgetSerializer, BudgetWriteSerializer, BudgetLineItemSerializer,
+    AssetTagSerializer, FMVSnapshotSerializer,
 )
-from .reports import generate_distribution_report, generate_dashboard_summary
+from .reports import generate_distribution_report, generate_dashboard_summary, generate_portfolio_by_class, generate_net_worth_summary
 from .excel_export import export_distribution_report
+from .performance import get_asset_performance, get_entity_performance, get_performance_summary
 
 
 class EntityViewSet(viewsets.ModelViewSet):
@@ -22,8 +28,110 @@ class EntityViewSet(viewsets.ModelViewSet):
 
 
 class AssetViewSet(viewsets.ModelViewSet):
-    queryset = Asset.objects.all()
+    queryset = Asset.objects.prefetch_related('tags', 'fmv_snapshots').all()
     serializer_class = AssetSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        # Filtering by asset_type
+        asset_type = self.request.query_params.get('asset_type')
+        if asset_type:
+            qs = qs.filter(asset_type=asset_type)
+        # Filtering by tag slug (multi-value: ?tag=illiquid&tag=domestic)
+        tags = self.request.query_params.getlist('tag')
+        if tags:
+            for tag_slug in tags:
+                qs = qs.filter(tags__slug=tag_slug)
+        # Filter: has_fmv — assets with at least one FMV snapshot
+        has_fmv = self.request.query_params.get('has_fmv')
+        if has_fmv is not None:
+            if has_fmv.lower() in ('true', '1'):
+                qs = qs.filter(fmv_snapshots__isnull=False).distinct()
+            elif has_fmv.lower() in ('false', '0'):
+                qs = qs.filter(fmv_snapshots__isnull=True)
+        # Filter: plaid_linked — assets mapped to a Plaid account
+        plaid_linked = self.request.query_params.get('plaid_linked')
+        if plaid_linked is not None:
+            if plaid_linked.lower() in ('true', '1'):
+                qs = qs.filter(plaid_accounts__isnull=False).distinct()
+            elif plaid_linked.lower() in ('false', '0'):
+                qs = qs.filter(plaid_accounts__isnull=True)
+        return qs
+
+    @action(detail=True, methods=['get'], url_path='fmv-history')
+    def fmv_history(self, request, pk=None):
+        """Return the FMV timeline for a specific asset with change indicators."""
+        asset = self.get_object()
+        snapshots = asset.fmv_snapshots.order_by('-snapshot_date')
+
+        result = []
+        snapshot_list = list(snapshots)
+        for i, snap in enumerate(snapshot_list):
+            entry = {
+                'snapshot_date': snap.snapshot_date,
+                'value': str(snap.value),
+                'source': snap.source,
+                'change_amount': None,
+                'change_pct': None,
+            }
+            # Compare to the next (older) snapshot
+            if i < len(snapshot_list) - 1:
+                prev = snapshot_list[i + 1]
+                change = snap.value - prev.value
+                entry['change_amount'] = str(change)
+                if prev.value and prev.value != 0:
+                    pct = (change / prev.value * 100).quantize(Decimal('0.01'))
+                    entry['change_pct'] = str(pct)
+            result.append(entry)
+
+        latest = snapshot_list[0] if snapshot_list else None
+        return Response({
+            'asset_id': asset.id,
+            'asset_name': asset.name,
+            'current_fmv': str(latest.value) if latest else None,
+            'current_fmv_date': str(latest.snapshot_date) if latest else None,
+            'snapshots': result,
+        })
+
+    @action(detail=True, methods=['post'], url_path='tags')
+    def set_tags(self, request, pk=None):
+        """Set tags on an asset (replace all existing tags)."""
+        asset = self.get_object()
+        tag_ids = request.data.get('tag_ids', [])
+        tags = list(AssetTag.objects.filter(id__in=tag_ids))
+        if len(tags) != len(set(tag_ids)):
+            found_ids = {t.id for t in tags}
+            missing = [tid for tid in tag_ids if tid not in found_ids]
+            return Response(
+                {'error': f'Tag IDs not found: {missing}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        asset.tags.set(tags)
+        serializer = self.get_serializer(asset)
+        return Response(serializer.data)
+
+
+class FMVSnapshotViewSet(viewsets.ModelViewSet):
+    serializer_class = FMVSnapshotSerializer
+
+    def get_queryset(self):
+        qs = FMVSnapshot.objects.select_related('asset').all()
+        # Filter by asset
+        asset_id = self.request.query_params.get('asset')
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+        # Filter by source
+        source = self.request.query_params.get('source')
+        if source:
+            qs = qs.filter(source=source)
+        # Filter by date range
+        date_from = self.request.query_params.get('date_from')
+        if date_from:
+            qs = qs.filter(snapshot_date__gte=date_from)
+        date_to = self.request.query_params.get('date_to')
+        if date_to:
+            qs = qs.filter(snapshot_date__lte=date_to)
+        return qs
 
 
 class EntityAssetOwnershipViewSet(viewsets.ModelViewSet):
@@ -112,6 +220,14 @@ class BudgetLineItemViewSet(viewsets.ModelViewSet):
     serializer_class = BudgetLineItemSerializer
 
 
+class AssetTagViewSet(viewsets.ModelViewSet):
+    serializer_class = AssetTagSerializer
+
+    def get_queryset(self):
+        from django.db.models import Count
+        return AssetTag.objects.annotate(assets_count=Count('assets')).all()
+
+
 def _parse_report_params(data):
     def _normalize_ids(value):
         if not value:
@@ -159,6 +275,75 @@ def export_report(request):
 
 @api_view(['GET'])
 def dashboard_summary(request):
-    """Quick KPI summary for the dashboard."""
+    """Quick KPI summary for the dashboard, including net worth."""
     data = generate_dashboard_summary()
+    # Add net worth summary
+    net_worth = generate_net_worth_summary()
+    data['net_worth'] = net_worth
+    return Response(data)
+
+
+@api_view(['GET'])
+def portfolio_by_class(request):
+    """GET /api/reports/portfolio-by-class/ — portfolio allocation by asset type."""
+    entity_ids = request.query_params.getlist('entity_id')
+    tag_slugs = request.query_params.getlist('tag')
+    entity_ids = [int(eid) for eid in entity_ids if eid] or None
+    tag_slugs = tag_slugs or None
+    data = generate_portfolio_by_class(entity_ids=entity_ids, tag_slugs=tag_slugs)
+    return Response(data)
+
+
+# ---------------------------------------------------------------------------
+# Performance endpoints (T043-T045)
+# ---------------------------------------------------------------------------
+
+
+@api_view(['GET'])
+def asset_performance(request, pk):
+    """GET /api/assets/{id}/performance/ — performance metrics for a single asset."""
+    try:
+        Asset.objects.get(pk=pk)
+    except Asset.DoesNotExist:
+        return Response({'error': 'Asset not found'}, status=status.HTTP_404_NOT_FOUND)
+    calc_date_str = request.query_params.get('calc_date')
+    calc_date = None
+    if calc_date_str:
+        try:
+            calc_date = date.fromisoformat(calc_date_str)
+        except ValueError:
+            return Response({'error': 'Invalid calc_date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+    data = get_asset_performance(pk, calc_date)
+    return Response(data)
+
+
+@api_view(['GET'])
+def entity_performance(request, pk):
+    """GET /api/entities/{id}/performance/ — ownership-weighted performance for an entity."""
+    try:
+        Entity.objects.get(pk=pk)
+    except Entity.DoesNotExist:
+        return Response({'error': 'Entity not found'}, status=status.HTTP_404_NOT_FOUND)
+    calc_date_str = request.query_params.get('calc_date')
+    calc_date = None
+    if calc_date_str:
+        try:
+            calc_date = date.fromisoformat(calc_date_str)
+        except ValueError:
+            return Response({'error': 'Invalid calc_date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+    data = get_entity_performance(pk, calc_date)
+    return Response(data)
+
+
+@api_view(['GET'])
+def performance_summary(request):
+    """GET /api/performance/summary/ — portfolio-wide performance summary."""
+    calc_date_str = request.query_params.get('calc_date')
+    calc_date = None
+    if calc_date_str:
+        try:
+            calc_date = date.fromisoformat(calc_date_str)
+        except ValueError:
+            return Response({'error': 'Invalid calc_date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+    data = get_performance_summary(calc_date)
     return Response(data)

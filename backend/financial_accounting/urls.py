@@ -11,4 +11,5 @@ urlpatterns = [
     path('healthz', health_check, name='health-check'),
     path('admin/', admin.site.urls),
     path('api/', include('api.urls')),
+    path('api/plaid/', include('plaid_integration.urls')),
 ]

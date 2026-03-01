@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'api',
+    'plaid_integration',
 ]
 
 MIDDLEWARE = [
@@ -165,3 +166,10 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.AllowAny',
     ],
 }
+
+# ---------------------------------------------------------------------------
+# Plaid configuration
+# ---------------------------------------------------------------------------
+PLAID_CLIENT_ID = os.environ.get('PLAID_CLIENT_ID', '')
+PLAID_SECRET = os.environ.get('PLAID_SECRET', '')
+PLAID_ENV = os.environ.get('PLAID_ENV', 'sandbox')  # sandbox | production

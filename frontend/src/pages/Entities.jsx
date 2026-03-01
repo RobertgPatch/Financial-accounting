@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
@@ -55,7 +56,7 @@ export default function Entities() {
   };
 
   const columns = [
-    { header: 'Name', key: 'name', render: r => <span className="font-medium text-gray-900">{r.name}</span> },
+    { header: 'Name', key: 'name', render: r => <Link to={`/entities/${r.id}`} className="font-medium text-blue-600 hover:text-blue-800">{r.name}</Link> },
     { header: 'Type', key: 'entity_type', render: r => <Badge color={typeColors[r.entity_type] || 'gray'}>{r.entity_type}</Badge> },
     { header: 'Email', key: 'email', render: r => r.email || '-' },
     { header: 'Created', key: 'created_at', render: r => r.created_at ? format(parseISO(r.created_at), 'MMM dd, yyyy') : '-' },

@@ -1,8 +1,11 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from decimal import Decimal
-from datetime import date
-from api.models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation
+from datetime import date, timedelta
+from api.models import (
+    Entity, Asset, EntityAssetOwnership, Distribution,
+    DistributionAllocation, AssetTag, FMVSnapshot,
+)
 
 
 class Command(BaseCommand):
@@ -26,23 +29,23 @@ class Command(BaseCommand):
             name='Johnson Family Trust', defaults={'entity_type': 'trust'}
         )
 
-        # Assets
+        # Assets (using expanded asset_type values)
         prop1, _ = Asset.objects.get_or_create(
             name='Sunset Apartments', defaults={
-                'asset_type': 'property',
+                'asset_type': 'real_estate',
                 'address': '123 Sunset Blvd, Los Angeles, CA 90028',
                 'description': '24-unit apartment complex'
             }
         )
         fund1, _ = Asset.objects.get_or_create(
             name='Growth Equity Fund I', defaults={
-                'asset_type': 'fund',
+                'asset_type': 'hedge_fund',
                 'description': 'Private equity growth fund'
             }
         )
         stock1, _ = Asset.objects.get_or_create(
             name='Apple Inc.', defaults={
-                'asset_type': 'stock',
+                'asset_type': 'public_equity',
                 'ticker_symbol': 'AAPL',
                 'description': 'Apple Inc. common stock'
             }
@@ -116,9 +119,74 @@ class Command(BaseCommand):
                         distribution=dist, entity=entity, amount=amount, percentage=pct
                     )
 
+        # Asset Tags
+        tag_domestic, _ = AssetTag.objects.get_or_create(
+            name='Domestic', defaults={'slug': 'domestic', 'color': '#3B82F6'}
+        )
+        tag_illiquid, _ = AssetTag.objects.get_or_create(
+            name='Illiquid', defaults={'slug': 'illiquid', 'color': '#EF4444'}
+        )
+        tag_income, _ = AssetTag.objects.get_or_create(
+            name='Income Producing', defaults={'slug': 'income-producing', 'color': '#10B981'}
+        )
+        tag_growth, _ = AssetTag.objects.get_or_create(
+            name='Growth', defaults={'slug': 'growth', 'color': '#8B5CF6'}
+        )
+        tag_core, _ = AssetTag.objects.get_or_create(
+            name='Core Holding', defaults={'slug': 'core-holding', 'color': '#F59E0B'}
+        )
+
+        # Assign tags to assets
+        prop1.tags.add(tag_domestic, tag_illiquid, tag_income)
+        fund1.tags.add(tag_illiquid, tag_growth)
+        stock1.tags.add(tag_domestic, tag_growth, tag_core)
+
+        # FMV Snapshots — quarterly history for meaningful TWR/IRR computation
+        today = date.today()
+        fmv_data = [
+            # (asset, [(months_ago, value), ...])
+            (prop1, [
+                (18, Decimal('2800000.00')),
+                (15, Decimal('2850000.00')),
+                (12, Decimal('2900000.00')),
+                (9, Decimal('2950000.00')),
+                (6, Decimal('3000000.00')),
+                (3, Decimal('3050000.00')),
+                (0, Decimal('3100000.00')),
+            ]),
+            (fund1, [
+                (18, Decimal('1500000.00')),
+                (15, Decimal('1520000.00')),
+                (12, Decimal('1480000.00')),
+                (9, Decimal('1550000.00')),
+                (6, Decimal('1600000.00')),
+                (3, Decimal('1650000.00')),
+                (0, Decimal('1700000.00')),
+            ]),
+            (stock1, [
+                (18, Decimal('450000.00')),
+                (15, Decimal('475000.00')),
+                (12, Decimal('460000.00')),
+                (9, Decimal('510000.00')),
+                (6, Decimal('530000.00')),
+                (3, Decimal('520000.00')),
+                (0, Decimal('550000.00')),
+            ]),
+        ]
+        for asset, snapshots in fmv_data:
+            for months_ago, value in snapshots:
+                snap_date = today - timedelta(days=months_ago * 30)
+                FMVSnapshot.objects.get_or_create(
+                    asset=asset,
+                    snapshot_date=snap_date,
+                    defaults={'value': value, 'source': 'manual'},
+                )
+
         self.stdout.write(self.style.SUCCESS(
             f'Done! Created {Entity.objects.count()} entities, '
             f'{Asset.objects.count()} assets, '
             f'{Distribution.objects.count()} distributions, '
-            f'{DistributionAllocation.objects.count()} allocations.'
+            f'{DistributionAllocation.objects.count()} allocations, '
+            f'{AssetTag.objects.count()} tags, '
+            f'{FMVSnapshot.objects.count()} FMV snapshots.'
         ))
