@@ -460,7 +460,7 @@ class CapitalCallViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------------------------------
 
 def _parse_portfolio_params(data):
-    """Parse common portfolio request parameters (entity_ids, as_of_date, type_filters)."""
+    """Parse common portfolio request parameters (entity_ids, as_of_date, start_date, end_date, type_filters)."""
     entity_ids_raw = data.get('entity_ids')
     entity_ids = None
     if entity_ids_raw:
@@ -477,6 +477,27 @@ def _parse_portfolio_params(data):
         except ValueError:
             pass  # fall back to None → reports default to today
 
+    # Date range filtering
+    start_date = None
+    start_raw = data.get('start_date')
+    if start_raw:
+        try:
+            start_date = date.fromisoformat(str(start_raw))
+        except ValueError:
+            pass
+
+    end_date = None
+    end_raw = data.get('end_date')
+    if end_raw:
+        try:
+            end_date = date.fromisoformat(str(end_raw))
+        except ValueError:
+            pass
+
+    # If end_date provided but no as_of_date, use end_date as as_of_date
+    if end_date and not as_of_date:
+        as_of_date = end_date
+
     type_filters = data.get('type_filters')
     if type_filters and isinstance(type_filters, list):
         type_filters = [str(t) for t in type_filters if t]
@@ -488,6 +509,8 @@ def _parse_portfolio_params(data):
     return {
         'entity_ids': entity_ids if entity_ids else None,
         'as_of_date': as_of_date,
+        'start_date': start_date,
+        'end_date': end_date,
         'type_filters': type_filters if type_filters else None,
     }
 
@@ -499,6 +522,8 @@ def portfolio_summary(request):
     report = generate_portfolio_summary(
         entity_ids=params['entity_ids'],
         as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
     )
     return Response(report)
 
@@ -510,6 +535,9 @@ def asset_class_summary(request):
     report = generate_asset_class_summary(
         entity_ids=params['entity_ids'],
         type_filters=params['type_filters'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
     )
     return Response(report)
 
@@ -521,6 +549,8 @@ def investment_performance(request):
     report = generate_investment_performance(
         entity_ids=params['entity_ids'],
         as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
     )
     return Response(report)
 
@@ -537,6 +567,8 @@ def portfolio_summary_export(request):
     report = generate_portfolio_summary(
         entity_ids=params['entity_ids'],
         as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
     )
     excel_buf = _export(report)
     today = date.today().isoformat()
@@ -557,6 +589,9 @@ def asset_class_summary_export(request):
     report = generate_asset_class_summary(
         entity_ids=params['entity_ids'],
         type_filters=params['type_filters'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
     )
     excel_buf = _export(report)
     today = date.today().isoformat()
@@ -577,6 +612,8 @@ def investment_performance_export(request):
     report = generate_investment_performance(
         entity_ids=params['entity_ids'],
         as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
     )
     excel_buf = _export(report)
     today = date.today().isoformat()

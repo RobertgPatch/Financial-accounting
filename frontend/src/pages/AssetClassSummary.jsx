@@ -1,11 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import {
-  PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
-} from 'recharts';
-import {
-  Paper, Typography, Table as MuiTable, TableBody, TableCell, TableContainer,
-  TableHead, TableRow, Alert, Box, Chip,
-} from '@mui/material';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import LoadingSpinner from '../components/ui/LoadingSpinner';
@@ -13,307 +6,222 @@ import { getAssetClassSummary, exportAssetClassSummary } from '../api/reports';
 import { getEntities } from '../api/entities';
 import { toArray } from '../api/utils';
 
-const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16', '#F97316'];
-const formatCurrency = (v) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v || 0);
+const fmtCurrency = (v) =>
+  v === null || v === undefined
+    ? '—'
+    : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v);
 
-const ASSET_TYPES = [
-  { key: 'cash', label: 'Cash & Equivalents' },
-  { key: 'real_estate', label: 'Real Estate' },
-  { key: 'public_equity', label: 'Public Equity' },
-  { key: 'private_equity', label: 'Private Equity' },
-  { key: 'fixed_income', label: 'Fixed Income' },
-  { key: 'hedge_fund', label: 'Hedge Fund' },
-  { key: 'crypto', label: 'Cryptocurrency' },
-  { key: 'collectible', label: 'Collectible' },
-  { key: 'other', label: 'Other' },
+const fmtRatio = (v) => (v === null || v === undefined ? '—' : Number(v).toFixed(2));
+const fmtPct = (v) => (v === null || v === undefined ? '' : `${Number(v).toFixed(0)}%`);
+const fmtIrr = (v) => (v === null || v === undefined ? '' : `${Number(v).toFixed(2)}%`);
+
+const COLUMNS = [
+  { key: 'asset_class', label: 'Asset Class', align: 'left', className: 'font-medium text-gray-900' },
+  { key: 'original_commitment', label: 'Original Commitment', fmt: fmtCurrency },
+  { key: 'pct_called', label: '% Called', fmt: fmtPct },
+  { key: 'unfunded_commitment', label: 'Unfunded Commitment', fmt: fmtCurrency },
+  { key: 'paid_in', label: 'Paid-In (ABS)', fmt: fmtCurrency },
+  { key: 'distributions', label: 'Distributions', fmt: fmtCurrency },
+  { key: 'residual', label: 'Residual Value', fmt: fmtCurrency },
+  { key: 'dpi', label: 'DPI', fmt: fmtRatio },
+  { key: 'rvpi', label: 'RVPI', fmt: fmtRatio },
+  { key: 'tvpi', label: 'TVPI', fmt: fmtRatio },
+  { key: 'irr', label: 'IRR (XIRR)', fmt: fmtIrr },
 ];
 
-export default function AssetClassSummary() {
+export default function AssetClassSummary({ dateRange = {} }) {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState('');
   const [entities, setEntities] = useState([]);
   const [selectedEntities, setSelectedEntities] = useState([]);
-  const [selectedTypes, setSelectedTypes] = useState([]);
 
   useEffect(() => {
-    getEntities()
-      .then((res) => setEntities(toArray(res)))
-      .catch(() => {});
+    getEntities().then((res) => setEntities(toArray(res))).catch(() => {});
   }, []);
 
   const handleGenerate = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const params = {};
+      const params = { ...dateRange };
       if (selectedEntities.length > 0) params.entity_ids = selectedEntities.join(',');
-      if (selectedTypes.length > 0) params.type_filters = selectedTypes;
       const res = await getAssetClassSummary(params);
       setReport(res.data);
-    } catch {
+    } catch (e) {
+      console.error('AssetClassSummary error:', e);
       setError('Failed to generate asset class summary.');
       setReport(null);
     } finally {
       setLoading(false);
     }
-  }, [selectedEntities, selectedTypes]);
+  }, [selectedEntities, dateRange]);
 
-  useEffect(() => {
-    handleGenerate();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { handleGenerate(); }, [handleGenerate]);
 
   const handleExport = async () => {
     setExporting(true);
     try {
-      const params = {};
+      const params = { ...dateRange };
       if (selectedEntities.length > 0) params.entity_ids = selectedEntities.join(',');
-      if (selectedTypes.length > 0) params.type_filters = selectedTypes;
       await exportAssetClassSummary(params);
-    } catch {
-      alert('Export failed.');
-    } finally {
-      setExporting(false);
-    }
+    } catch { alert('Export failed.'); }
+    finally { setExporting(false); }
   };
 
-  const toggleEntity = (id) => {
+  const toggleEntity = (id) =>
     setSelectedEntities((prev) =>
       prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id],
     );
-  };
-
-  const toggleType = (key) => {
-    setSelectedTypes((prev) =>
-      prev.includes(key) ? prev.filter((t) => t !== key) : [...prev, key],
-    );
-  };
-
-  // Prepare pie chart data
-  const pieData = (report?.by_class || []).map((c, i) => ({
-    name: c.label,
-    value: Number(c.total_value),
-    color: COLORS[i % COLORS.length],
-  }));
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Filters */}
-      <Card title="Filters">
-        <div className="space-y-4">
-          {entities.length > 0 && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Entities</label>
-              <div className="flex flex-wrap gap-2">
-                {entities.map((e) => (
-                  <button
-                    key={e.id}
-                    onClick={() => toggleEntity(e.id)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                      selectedEntities.includes(e.id)
-                        ? 'bg-blue-100 border-blue-300 text-blue-700'
-                        : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
-                    }`}
-                  >
-                    {e.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Asset Types</label>
-            <div className="flex flex-wrap gap-2">
-              {ASSET_TYPES.map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => toggleType(t.key)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                    selectedTypes.includes(t.key)
-                      ? 'bg-emerald-100 border-emerald-300 text-emerald-700'
-                      : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
+      <div className="flex flex-wrap items-center gap-3">
+        {entities.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {entities.map((e) => (
+              <button
+                key={e.id}
+                onClick={() => toggleEntity(e.id)}
+                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                  selectedEntities.includes(e.id)
+                    ? 'bg-blue-100 border-blue-300 text-blue-700'
+                    : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {e.name}
+              </button>
+            ))}
           </div>
-          <div className="flex gap-3">
-            <Button onClick={handleGenerate} disabled={loading}>
-              {loading ? 'Loading...' : 'Refresh'}
+        )}
+        <div className="flex gap-2 ml-auto">
+          <Button size="sm" onClick={handleGenerate} disabled={loading}>
+            {loading ? 'Loading…' : 'Refresh'}
+          </Button>
+          {report && (
+            <Button size="sm" variant="secondary" onClick={handleExport} disabled={exporting}>
+              {exporting ? 'Exporting…' : 'Export Excel'}
             </Button>
-            {report && (
-              <Button variant="secondary" onClick={handleExport} disabled={exporting}>
-                {exporting ? 'Exporting...' : 'Export to Excel'}
-              </Button>
-            )}
-          </div>
+          )}
         </div>
-      </Card>
+      </div>
 
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm">{error}</div>}
       {loading && <LoadingSpinner />}
 
+      {/* Data Table */}
       {report && !loading && (
-        <>
-          {/* Summary KPIs */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Card>
-              <p className="text-sm text-gray-500">Total Portfolio Value</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {formatCurrency(report.total_value)}
-              </p>
-            </Card>
-            <Card>
-              <p className="text-sm text-gray-500">Asset Classes</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {(report.by_class || []).length}
-              </p>
-            </Card>
-            <Card>
-              <p className="text-sm text-gray-500">Total Items</p>
-              <p className="text-2xl font-bold text-gray-900">{report.item_count}</p>
-            </Card>
-          </div>
-
-          {/* Pie Chart + Table Side-by-Side */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Pie Chart */}
-            {pieData.length > 0 && (
-              <Card title="Allocation by Asset Class">
-                <ResponsiveContainer width="100%" height={320}>
-                  <PieChart>
-                    <Pie
-                      data={pieData}
-                      dataKey="value"
-                      nameKey="name"
-                      cx="50%"
-                      cy="50%"
-                      outerRadius={110}
-                      label={({ name, percent }) =>
-                        `${name} ${(percent * 100).toFixed(1)}%`
-                      }
+        <Card
+          title="Asset Class Summary"
+          subtitle={`As of ${report.as_of_date}`}
+        >
+          <div className="overflow-x-auto -mx-4 sm:-mx-6">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  {COLUMNS.map((col) => (
+                    <th
+                      key={col.key}
+                      className={`px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap ${
+                        col.align === 'left' ? 'text-left' : 'text-right'
+                      }`}
                     >
-                      {pieData.map((entry, i) => (
-                        <Cell key={i} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      formatter={(v) => formatCurrency(v)}
-                    />
-                    <Legend />
-                  </PieChart>
-                </ResponsiveContainer>
-              </Card>
-            )}
-
-            {/* Asset Class Table */}
-            <Card title="Breakdown">
-              <TableContainer component={Paper} elevation={0}>
-                <MuiTable size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem' }}>
-                        Asset Class
-                      </TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700, fontSize: '0.75rem' }}>
-                        Value
-                      </TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700, fontSize: '0.75rem' }}>
-                        % of Portfolio
-                      </TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700, fontSize: '0.75rem' }}>
-                        Items
-                      </TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {(report.by_class || []).map((cls, i) => (
-                      <TableRow key={cls.asset_type} hover>
-                        <TableCell sx={{ fontSize: '0.8rem' }}>
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="w-3 h-3 rounded-full inline-block"
-                              style={{ backgroundColor: COLORS[i % COLORS.length] }}
-                            />
-                            {cls.label}
-                          </div>
-                        </TableCell>
-                        <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
-                          {formatCurrency(cls.total_value)}
-                        </TableCell>
-                        <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
-                          {Number(cls.pct_of_portfolio).toFixed(2)}%
-                        </TableCell>
-                        <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
-                          {cls.item_count}
-                        </TableCell>
-                      </TableRow>
+                      {col.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {(report.rows || []).map((row) => (
+                  <tr key={row.asset_type} className="hover:bg-gray-50 transition-colors">
+                    {COLUMNS.map((col) => (
+                      <td
+                        key={col.key}
+                        className={`px-3 py-2.5 whitespace-nowrap ${
+                          col.align === 'left' ? 'text-left' : 'text-right'
+                        } ${col.className || 'text-gray-700'}`}
+                      >
+                        {col.fmt ? col.fmt(row[col.key]) : row[col.key]}
+                      </td>
                     ))}
-                  </TableBody>
-                </MuiTable>
-              </TableContainer>
+                  </tr>
+                ))}
 
-              {(report.by_class || []).length === 0 && (
-                <div className="text-center py-8 text-gray-400">
-                  <p>No assets found. Add assets with FMV snapshots or link Plaid accounts.</p>
-                </div>
-              )}
-            </Card>
+                {/* All Classes summary row */}
+                {report.all_classes && (
+                  <tr className="bg-gray-50 border-t-2 border-gray-300 font-semibold">
+                    <td className="px-3 py-2.5 whitespace-nowrap text-left text-gray-900">
+                      All Classes
+                    </td>
+                    {COLUMNS.slice(1).map((col) => (
+                      <td
+                        key={col.key}
+                        className="px-3 py-2.5 whitespace-nowrap text-right text-gray-900"
+                      >
+                        {col.fmt ? col.fmt(report.all_classes[col.key]) : report.all_classes[col.key]}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
 
-          {/* Individual Items Table */}
-          {(report.items || []).length > 0 && (
-            <Card title="Individual Assets">
-              <TableContainer component={Paper} elevation={0}>
-                <MuiTable size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem' }}>Name</TableCell>
-                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem' }}>Type</TableCell>
-                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem' }}>Source</TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700, fontSize: '0.75rem' }}>Value</TableCell>
-                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem' }}>As Of</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {report.items.map((item, i) => (
-                      <TableRow key={i} hover>
-                        <TableCell sx={{ fontSize: '0.8rem' }}>{item.name}</TableCell>
-                        <TableCell sx={{ fontSize: '0.8rem' }}>
-                          <Chip
-                            label={item.asset_type}
-                            size="small"
-                            variant="outlined"
-                            sx={{ fontSize: '0.7rem' }}
-                          />
-                        </TableCell>
-                        <TableCell sx={{ fontSize: '0.8rem' }}>
-                          <Chip
-                            label={item.source}
-                            size="small"
-                            color={item.source === 'plaid' ? 'primary' : 'default'}
-                            sx={{ fontSize: '0.7rem' }}
-                          />
-                        </TableCell>
-                        <TableCell align="right" sx={{ fontSize: '0.8rem' }}>
-                          {formatCurrency(item.value)}
-                        </TableCell>
-                        <TableCell sx={{ fontSize: '0.8rem' }}>
-                          {item.snapshot_date || '—'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </MuiTable>
-              </TableContainer>
-            </Card>
+          {(report.rows || []).length === 0 && (
+            <div className="text-center py-8 text-gray-400">
+              <p className="text-lg">No asset class data available</p>
+              <p className="text-sm mt-1">Add commitments and capital calls to see data by asset class.</p>
+            </div>
           )}
-        </>
+        </Card>
       )}
+
+      {/* Metric Guide */}
+      <MetricGuide />
+    </div>
+  );
+}
+
+function MetricGuide() {
+  return (
+    <Card title="Metric Guide" subtitle="PE / VC performance metrics explained">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+        <Metric
+          label="DPI — Distributions to Paid-In"
+          desc="Cash-on-cash return. How much cash has been returned relative to what you invested. DPI = Distributions ÷ Paid-In. A DPI of 2.0× means you've received 2× your money back in cash."
+        />
+        <Metric
+          label="RVPI — Residual Value to Paid-In"
+          desc="Unrealized value remaining. The current market value of your remaining holdings divided by what you invested. RVPI = Residual ÷ Paid-In."
+        />
+        <Metric
+          label="TVPI — Total Value to Paid-In"
+          desc="Total multiple of money. Combines realized (cash returned) and unrealized (residual). TVPI = DPI + RVPI = (Distributions + Residual) ÷ Paid-In."
+        />
+        <Metric
+          label="IRR (XIRR) — Internal Rate of Return"
+          desc="Annualized return accounting for the timing of each cash flow. Unlike TVPI, a quick 2× return has a higher IRR than a slow 2× return."
+        />
+        <Metric
+          label="% Called"
+          desc="Percentage of the original commitment that has been drawn (called) by the fund via capital calls. % Called = Paid-In ÷ Original Commitment."
+        />
+        <Metric
+          label="Unfunded Commitment"
+          desc="The remaining amount you've pledged but hasn't been called yet. Unfunded = Original Commitment − Paid-In."
+        />
+      </div>
+    </Card>
+  );
+}
+
+function Metric({ label, desc }) {
+  return (
+    <div>
+      <dt className="font-semibold text-gray-900">{label}</dt>
+      <dd className="text-gray-500 mt-0.5 leading-relaxed">{desc}</dd>
     </div>
   );
 }

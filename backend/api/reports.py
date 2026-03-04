@@ -216,13 +216,13 @@ def compute_entity_residual(entity_id, as_of_date=None):
     return total_residual
 
 
-def generate_portfolio_summary(entity_ids=None, as_of_date=None):
+def generate_portfolio_summary(entity_ids=None, as_of_date=None, start_date=None, end_date=None):
     """Generate Portfolio Summary with entity rollups and PE/VC metrics."""
     from .models import Commitment, CapitalCall
     from .performance import compute_entity_xirr
 
     if as_of_date is None:
-        as_of_date = date.today()
+        as_of_date = end_date or date.today()
 
     # Get entities to include
     if entity_ids:
@@ -244,10 +244,13 @@ def generate_portfolio_summary(entity_ids=None, as_of_date=None):
             total=Sum('original_amount')
         )['total'] or Decimal('0.00')
 
-        # Paid-in from capital calls
-        paid_in = CapitalCall.objects.filter(
-            commitment__entity=entity
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        # Paid-in from capital calls (filtered by date range)
+        calls_qs = CapitalCall.objects.filter(commitment__entity=entity)
+        if start_date:
+            calls_qs = calls_qs.filter(call_date__gte=start_date)
+        if end_date:
+            calls_qs = calls_qs.filter(call_date__lte=end_date)
+        paid_in = calls_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # % Called and Unfunded
         if original_commitment > 0:
@@ -257,10 +260,13 @@ def generate_portfolio_summary(entity_ids=None, as_of_date=None):
             pct_called = None
             unfunded = Decimal('0.00')
 
-        # Distributions from DistributionAllocation
-        distributions = DistributionAllocation.objects.filter(
-            entity=entity
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        # Distributions from DistributionAllocation (filtered by date range)
+        dist_qs = DistributionAllocation.objects.filter(entity=entity)
+        if start_date:
+            dist_qs = dist_qs.filter(distribution__distribution_date__gte=start_date)
+        if end_date:
+            dist_qs = dist_qs.filter(distribution__distribution_date__lte=end_date)
+        distributions = dist_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # Residual value
         residual = compute_entity_residual(entity.id, as_of_date)
@@ -276,7 +282,7 @@ def generate_portfolio_summary(entity_ids=None, as_of_date=None):
             tvpi = None
 
         # IRR
-        irr = compute_entity_xirr(entity.id, as_of_date)
+        irr = compute_entity_xirr(entity.id, as_of_date, start_date=start_date, end_date=end_date)
 
         entity_rows.append({
             'entity_id': entity.id,
@@ -316,7 +322,7 @@ def generate_portfolio_summary(entity_ids=None, as_of_date=None):
 
     # All-entities IRR: pool ALL cash flows across ALL entities
     all_entity_ids = [e.id for e in entities]
-    all_irr = _compute_pooled_xirr(all_entity_ids, as_of_date)
+    all_irr = _compute_pooled_xirr(all_entity_ids, as_of_date, start_date=start_date, end_date=end_date)
 
     all_entities_row = {
         'original_commitment': str(total_original.quantize(Decimal('0.01'))),
@@ -342,7 +348,7 @@ def generate_portfolio_summary(entity_ids=None, as_of_date=None):
     }
 
 
-def _compute_pooled_xirr(entity_ids, as_of_date):
+def _compute_pooled_xirr(entity_ids, as_of_date, start_date=None, end_date=None):
     """Pool cash flows from multiple entities and compute a single XIRR."""
     from .models import CapitalCall
     from .performance import calculate_xirr
@@ -353,6 +359,10 @@ def _compute_pooled_xirr(entity_ids, as_of_date):
     calls = CapitalCall.objects.filter(
         commitment__entity_id__in=entity_ids
     ).select_related('commitment')
+    if start_date:
+        calls = calls.filter(call_date__gte=start_date)
+    if end_date:
+        calls = calls.filter(call_date__lte=end_date)
     for call in calls:
         cash_flows.append((call.call_date, -float(call.amount)))
 
@@ -360,6 +370,10 @@ def _compute_pooled_xirr(entity_ids, as_of_date):
     allocs = DistributionAllocation.objects.filter(
         entity_id__in=entity_ids
     ).select_related('distribution')
+    if start_date:
+        allocs = allocs.filter(distribution__distribution_date__gte=start_date)
+    if end_date:
+        allocs = allocs.filter(distribution__distribution_date__lte=end_date)
     for alloc in allocs:
         cash_flows.append((alloc.distribution.distribution_date, float(alloc.amount)))
 
@@ -379,55 +393,233 @@ def _compute_pooled_xirr(entity_ids, as_of_date):
     return None
 
 
-def generate_asset_class_summary(entity_ids=None, type_filters=None):
-    """Generate Asset Class Summary with allocation breakdown."""
-    items = _collect_valued_items(entity_ids=entity_ids, type_filters=type_filters)
+def _compute_asset_class_xirr(asset_type, entity_ids, as_of_date, start_date=None, end_date=None):
+    """Compute pooled XIRR for all commitments of a given asset_type."""
+    from .models import Commitment, CapitalCall
+    from .performance import calculate_xirr
+
+    commitments = Commitment.objects.filter(asset__asset_type=asset_type).select_related('asset')
+    if entity_ids:
+        commitments = commitments.filter(entity_id__in=entity_ids)
+
+    cash_flows = []
+    for commitment in commitments:
+        calls_qs = commitment.capital_calls.all()
+        if start_date:
+            calls_qs = calls_qs.filter(call_date__gte=start_date)
+        if end_date:
+            calls_qs = calls_qs.filter(call_date__lte=end_date)
+        for call in calls_qs:
+            cash_flows.append((call.call_date, -float(call.amount)))
+
+    allocs = DistributionAllocation.objects.filter(
+        distribution__asset__asset_type=asset_type
+    ).select_related('distribution')
+    if entity_ids:
+        allocs = allocs.filter(entity_id__in=entity_ids)
+    if start_date:
+        allocs = allocs.filter(distribution__distribution_date__gte=start_date)
+    if end_date:
+        allocs = allocs.filter(distribution__distribution_date__lte=end_date)
+    for alloc in allocs:
+        cash_flows.append((alloc.distribution.distribution_date, float(alloc.amount)))
+
+    # Terminal residual
+    from plaid_integration.models import PlaidAccount
+    plaid_balance_map = {}
+    for pa in PlaidAccount.objects.filter(asset__isnull=False, asset__asset_type=asset_type):
+        if pa.asset_id and pa.current_balance is not None:
+            plaid_balance_map[pa.asset_id] = pa.current_balance
+
+    ownerships = EntityAssetOwnership.objects.filter(
+        asset__asset_type=asset_type
+    ).select_related('asset')
+    if entity_ids:
+        ownerships = ownerships.filter(entity_id__in=entity_ids)
+
+    total_residual = Decimal('0.00')
+    for ownership in ownerships:
+        aid = ownership.asset_id
+        if aid in plaid_balance_map:
+            asset_value = plaid_balance_map[aid]
+        else:
+            snaps = FMVSnapshot.objects.filter(asset_id=aid)
+            if as_of_date:
+                snaps = snaps.filter(snapshot_date__lte=as_of_date)
+            latest = snaps.order_by('-snapshot_date').first()
+            asset_value = latest.value if latest else Decimal('0.00')
+        total_residual += asset_value * ownership.percentage / Decimal('100')
+
+    if total_residual > 0:
+        cash_flows.append((as_of_date, float(total_residual)))
+
+    if len(cash_flows) < 2:
+        return None
+    result = calculate_xirr(cash_flows)
+    if result is not None:
+        return Decimal(str(round(result * 100, 2)))
+    return None
+
+
+def generate_asset_class_summary(entity_ids=None, type_filters=None, as_of_date=None, start_date=None, end_date=None):
+    """Generate Asset Class Summary — same columns as Portfolio Summary but grouped by asset type."""
+    from .models import Commitment, CapitalCall
+
+    if as_of_date is None:
+        as_of_date = end_date or date.today()
+
+    # Determine which asset types have data
+    commitments = Commitment.objects.select_related('asset').all()
+    if entity_ids:
+        commitments = commitments.filter(entity_id__in=entity_ids)
+    if type_filters:
+        commitments = commitments.filter(asset__asset_type__in=type_filters)
 
     # Group by asset_type
-    type_totals = {}
-    total_value = Decimal('0.00')
-
-    for item in items:
-        total_value += item['value']
-        t = item['asset_type']
-        if t not in type_totals:
-            type_totals[t] = {
-                'asset_type': t,
-                'label': item['label'],
-                'total_value': Decimal('0.00'),
-                'item_count': 0,
+    class_data = {}  # asset_type -> accumulators
+    for commitment in commitments:
+        atype = commitment.asset.asset_type
+        if atype not in class_data:
+            class_data[atype] = {
+                'original_commitment': Decimal('0.00'),
+                'paid_in': Decimal('0.00'),
+                'distributions': Decimal('0.00'),
+                'residual': Decimal('0.00'),
             }
-        type_totals[t]['total_value'] += item['value']
-        type_totals[t]['item_count'] += 1
+        cd = class_data[atype]
+        cd['original_commitment'] += commitment.original_amount
 
-    by_class = []
-    for t_data in sorted(type_totals.values(), key=lambda x: -x['total_value']):
-        pct = (t_data['total_value'] / total_value * 100).quantize(Decimal('0.01')) if total_value != 0 else Decimal('0.00')
-        by_class.append({
-            'asset_type': t_data['asset_type'],
-            'label': t_data['label'],
-            'total_value': str(t_data['total_value'].quantize(Decimal('0.01'))),
-            'pct_of_portfolio': str(pct),
-            'item_count': t_data['item_count'],
+        # Paid-in from capital calls
+        calls_qs = commitment.capital_calls
+        if start_date:
+            calls_qs = calls_qs.filter(call_date__gte=start_date)
+        if end_date:
+            calls_qs = calls_qs.filter(call_date__lte=end_date)
+        calls_total = calls_qs.aggregate(
+            total=Sum('amount')
+        )['total'] or Decimal('0.00')
+        cd['paid_in'] += calls_total
+
+        # Distributions for this entity-asset pair
+        dist_qs = DistributionAllocation.objects.filter(
+            entity=commitment.entity,
+            distribution__asset=commitment.asset,
+        )
+        if start_date:
+            dist_qs = dist_qs.filter(distribution__distribution_date__gte=start_date)
+        if end_date:
+            dist_qs = dist_qs.filter(distribution__distribution_date__lte=end_date)
+        dist_total = dist_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        cd['distributions'] += dist_total
+
+        # Residual for this entity-asset pair
+        ownership = EntityAssetOwnership.objects.filter(
+            entity=commitment.entity, asset=commitment.asset
+        ).first()
+        pct = ownership.percentage if ownership else Decimal('0')
+
+        from plaid_integration.models import PlaidAccount
+        plaid_acct = PlaidAccount.objects.filter(asset=commitment.asset).first()
+        if plaid_acct and plaid_acct.current_balance is not None:
+            asset_value = plaid_acct.current_balance
+        else:
+            snap = FMVSnapshot.objects.filter(asset=commitment.asset)
+            if as_of_date:
+                snap = snap.filter(snapshot_date__lte=as_of_date)
+            latest = snap.order_by('-snapshot_date').first()
+            asset_value = latest.value if latest else Decimal('0.00')
+        cd['residual'] += asset_value * pct / Decimal('100')
+
+    # Build rows
+    rows = []
+    total_original = Decimal('0.00')
+    total_paid_in = Decimal('0.00')
+    total_distributions = Decimal('0.00')
+    total_residual = Decimal('0.00')
+
+    for atype in sorted(class_data.keys(), key=lambda t: -class_data[t]['original_commitment']):
+        cd = class_data[atype]
+        oc = cd['original_commitment']
+        pi = cd['paid_in']
+        dist = cd['distributions']
+        res = cd['residual']
+
+        if oc > 0:
+            pct_called = (pi / oc * 100).quantize(Decimal('0.01'))
+            unfunded = oc - pi
+        else:
+            pct_called = None
+            unfunded = Decimal('0.00')
+
+        if pi > 0:
+            dpi = (dist / pi).quantize(Decimal('0.01'))
+            rvpi = (res / pi).quantize(Decimal('0.01'))
+            tvpi = ((dist + res) / pi).quantize(Decimal('0.01'))
+        else:
+            dpi = None
+            rvpi = None
+            tvpi = None
+
+        irr = _compute_asset_class_xirr(atype, entity_ids, as_of_date, start_date=start_date, end_date=end_date)
+
+        rows.append({
+            'asset_class': ASSET_TYPE_LABELS.get(atype, atype),
+            'asset_type': atype,
+            'original_commitment': str(oc.quantize(Decimal('0.01'))),
+            'pct_called': str(pct_called) if pct_called is not None else None,
+            'unfunded_commitment': str(unfunded.quantize(Decimal('0.01'))),
+            'paid_in': str(pi.quantize(Decimal('0.01'))),
+            'distributions': str(dist.quantize(Decimal('0.01'))),
+            'residual': str(res.quantize(Decimal('0.01'))),
+            'dpi': str(dpi) if dpi is not None else None,
+            'rvpi': str(rvpi) if rvpi is not None else None,
+            'tvpi': str(tvpi) if tvpi is not None else None,
+            'irr': str(irr) if irr is not None else None,
         })
 
-    # Build items list (string-encoded values)
-    items_out = []
-    for item in items:
-        items_out.append({
-            'name': item['name'],
-            'value': str(item['value'].quantize(Decimal('0.01'))),
-            'source': item['source'],
-            'asset_type': item['asset_type'],
-            'institution': item.get('institution'),
-            'snapshot_date': item.get('snapshot_date'),
-        })
+        total_original += oc
+        total_paid_in += pi
+        total_distributions += dist
+        total_residual += res
+
+    # All Classes total row
+    if total_paid_in > 0:
+        all_dpi = (total_distributions / total_paid_in).quantize(Decimal('0.01'))
+        all_rvpi = (total_residual / total_paid_in).quantize(Decimal('0.01'))
+        all_tvpi = ((total_distributions + total_residual) / total_paid_in).quantize(Decimal('0.01'))
+    else:
+        all_dpi = None
+        all_rvpi = None
+        all_tvpi = None
+
+    if total_original > 0:
+        all_pct_called = (total_paid_in / total_original * 100).quantize(Decimal('0.01'))
+    else:
+        all_pct_called = None
+
+    # Pooled IRR across all types
+    all_entity_ids = list(entity_ids) if entity_ids else list(
+        Entity.objects.values_list('id', flat=True)
+    )
+    all_irr = _compute_pooled_xirr(all_entity_ids, as_of_date, start_date=start_date, end_date=end_date)
+
+    all_classes_row = {
+        'original_commitment': str(total_original.quantize(Decimal('0.01'))),
+        'pct_called': str(all_pct_called) if all_pct_called is not None else None,
+        'unfunded_commitment': str((total_original - total_paid_in).quantize(Decimal('0.01'))),
+        'paid_in': str(total_paid_in.quantize(Decimal('0.01'))),
+        'distributions': str(total_distributions.quantize(Decimal('0.01'))),
+        'residual': str(total_residual.quantize(Decimal('0.01'))),
+        'dpi': str(all_dpi) if all_dpi is not None else None,
+        'rvpi': str(all_rvpi) if all_rvpi is not None else None,
+        'tvpi': str(all_tvpi) if all_tvpi is not None else None,
+        'irr': str(all_irr) if all_irr is not None else None,
+    }
 
     return {
-        'total_value': str(total_value.quantize(Decimal('0.01'))),
-        'item_count': len(items),
-        'by_class': by_class,
-        'items': items_out,
+        'as_of_date': str(as_of_date),
+        'rows': rows,
+        'all_classes': all_classes_row,
         'filters': {
             'entity_ids': [int(eid) for eid in entity_ids] if entity_ids else [],
             'type_filters': type_filters or [],
@@ -435,13 +627,13 @@ def generate_asset_class_summary(entity_ids=None, type_filters=None):
     }
 
 
-def generate_investment_performance(entity_ids=None, as_of_date=None):
+def generate_investment_performance(entity_ids=None, as_of_date=None, start_date=None, end_date=None):
     """Generate Investment Performance view — per-asset and per-entity metrics."""
     from .models import Commitment, CapitalCall
     from .performance import calculate_xirr, compute_entity_xirr
 
     if as_of_date is None:
-        as_of_date = date.today()
+        as_of_date = end_date or date.today()
 
     # Get commitments (optionally filtered by entity)
     commitments = Commitment.objects.select_related('entity', 'asset').all()
@@ -456,15 +648,25 @@ def generate_investment_performance(entity_ids=None, as_of_date=None):
         asset = commitment.asset
 
         # Per-asset paid-in
-        paid_in = commitment.capital_calls.aggregate(
+        calls_qs = commitment.capital_calls
+        if start_date:
+            calls_qs = calls_qs.filter(call_date__gte=start_date)
+        if end_date:
+            calls_qs = calls_qs.filter(call_date__lte=end_date)
+        paid_in = calls_qs.aggregate(
             total=Sum('amount')
         )['total'] or Decimal('0.00')
 
         # Per-asset distributions
-        distributions = DistributionAllocation.objects.filter(
+        dist_qs = DistributionAllocation.objects.filter(
             entity=entity,
             distribution__asset=asset,
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        )
+        if start_date:
+            dist_qs = dist_qs.filter(distribution__distribution_date__gte=start_date)
+        if end_date:
+            dist_qs = dist_qs.filter(distribution__distribution_date__lte=end_date)
+        distributions = dist_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # Per-asset residual (pro-rated by ownership)
         ownership = EntityAssetOwnership.objects.filter(
@@ -498,11 +700,20 @@ def generate_investment_performance(entity_ids=None, as_of_date=None):
 
         # Per-asset IRR
         asset_cash_flows = []
-        for call in commitment.capital_calls.all():
+        irr_calls = commitment.capital_calls.all()
+        if start_date:
+            irr_calls = irr_calls.filter(call_date__gte=start_date)
+        if end_date:
+            irr_calls = irr_calls.filter(call_date__lte=end_date)
+        for call in irr_calls:
             asset_cash_flows.append((call.call_date, -float(call.amount)))
         asset_allocs = DistributionAllocation.objects.filter(
             entity=entity, distribution__asset=asset,
         ).select_related('distribution')
+        if start_date:
+            asset_allocs = asset_allocs.filter(distribution__distribution_date__gte=start_date)
+        if end_date:
+            asset_allocs = asset_allocs.filter(distribution__distribution_date__lte=end_date)
         for alloc in asset_allocs:
             asset_cash_flows.append((alloc.distribution.distribution_date, float(alloc.amount)))
         if residual > 0:
@@ -514,6 +725,15 @@ def generate_investment_performance(entity_ids=None, as_of_date=None):
             if result is not None:
                 asset_irr = Decimal(str(round(result * 100, 2)))
 
+        # % Called and Unfunded
+        orig = commitment.original_amount
+        if orig > 0:
+            inv_pct_called = (paid_in / orig * 100).quantize(Decimal('0.01'))
+            inv_unfunded = orig - paid_in
+        else:
+            inv_pct_called = None
+            inv_unfunded = Decimal('0.00')
+
         investments.append({
             'asset_id': asset.id,
             'asset_name': asset.name,
@@ -521,6 +741,8 @@ def generate_investment_performance(entity_ids=None, as_of_date=None):
             'entity_id': entity.id,
             'entity_name': entity.name,
             'original_commitment': str(commitment.original_amount.quantize(Decimal('0.01'))),
+            'pct_called': str(inv_pct_called) if inv_pct_called is not None else None,
+            'unfunded_commitment': str(inv_unfunded.quantize(Decimal('0.01'))),
             'paid_in': str(paid_in.quantize(Decimal('0.01'))),
             'distributions': str(distributions.quantize(Decimal('0.01'))),
             'residual': str(residual.quantize(Decimal('0.01'))),
@@ -536,10 +758,12 @@ def generate_investment_performance(entity_ids=None, as_of_date=None):
             entity_data[eid] = {
                 'entity_id': eid,
                 'entity_name': entity.name,
+                'original_commitment': Decimal('0.00'),
                 'paid_in': Decimal('0.00'),
                 'distributions': Decimal('0.00'),
                 'residual': Decimal('0.00'),
             }
+        entity_data[eid]['original_commitment'] += commitment.original_amount
         entity_data[eid]['paid_in'] += paid_in
         entity_data[eid]['distributions'] += distributions
         entity_data[eid]['residual'] += residual
@@ -547,9 +771,18 @@ def generate_investment_performance(entity_ids=None, as_of_date=None):
     # Build entity_totals with pooled XIRR
     entity_totals = []
     for eid, edata in sorted(entity_data.items(), key=lambda x: x[1]['entity_name']):
+        eoc = edata['original_commitment']
         ep = edata['paid_in']
         ed = edata['distributions']
         er = edata['residual']
+
+        if eoc > 0:
+            e_pct_called = (ep / eoc * 100).quantize(Decimal('0.01'))
+            e_unfunded = eoc - ep
+        else:
+            e_pct_called = None
+            e_unfunded = Decimal('0.00')
+
         if ep > 0:
             e_dpi = (ed / ep).quantize(Decimal('0.01'))
             e_rvpi = (er / ep).quantize(Decimal('0.01'))
@@ -559,11 +792,14 @@ def generate_investment_performance(entity_ids=None, as_of_date=None):
             e_rvpi = None
             e_tvpi = None
 
-        e_irr = compute_entity_xirr(eid, as_of_date)
+        e_irr = compute_entity_xirr(eid, as_of_date, start_date=start_date, end_date=end_date)
 
         entity_totals.append({
             'entity_id': eid,
             'entity_name': edata['entity_name'],
+            'original_commitment': str(eoc.quantize(Decimal('0.01'))),
+            'pct_called': str(e_pct_called) if e_pct_called is not None else None,
+            'unfunded_commitment': str(e_unfunded.quantize(Decimal('0.01'))),
             'paid_in': str(ep.quantize(Decimal('0.01'))),
             'distributions': str(ed.quantize(Decimal('0.01'))),
             'residual': str(er.quantize(Decimal('0.01'))),

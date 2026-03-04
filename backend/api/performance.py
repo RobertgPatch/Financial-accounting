@@ -254,7 +254,7 @@ def _brent_xirr(data, lo=-0.99, hi=10.0, tol=1e-10, max_iter=100):
     return None
 
 
-def compute_entity_xirr(entity_id, as_of_date=None):
+def compute_entity_xirr(entity_id, as_of_date=None, start_date=None, end_date=None):
     """
     Compute entity-level XIRR by pooling all cash flows across all assets.
     Capital calls are negative, distributions are positive, terminal residual
@@ -264,7 +264,7 @@ def compute_entity_xirr(entity_id, as_of_date=None):
     from .reports import compute_entity_residual
 
     if as_of_date is None:
-        as_of_date = date.today()
+        as_of_date = end_date or date.today()
 
     cash_flows = []
 
@@ -272,6 +272,10 @@ def compute_entity_xirr(entity_id, as_of_date=None):
     calls = CapitalCall.objects.filter(
         commitment__entity_id=entity_id
     )
+    if start_date:
+        calls = calls.filter(call_date__gte=start_date)
+    if end_date:
+        calls = calls.filter(call_date__lte=end_date)
     for call in calls:
         cash_flows.append((call.call_date, -float(call.amount)))
 
@@ -279,6 +283,10 @@ def compute_entity_xirr(entity_id, as_of_date=None):
     allocs = DistributionAllocation.objects.filter(
         entity_id=entity_id
     ).select_related('distribution')
+    if start_date:
+        allocs = allocs.filter(distribution__distribution_date__gte=start_date)
+    if end_date:
+        allocs = allocs.filter(distribution__distribution_date__lte=end_date)
     for alloc in allocs:
         cash_flows.append((alloc.distribution.distribution_date, float(alloc.amount)))
 
