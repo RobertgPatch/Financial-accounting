@@ -40,7 +40,7 @@ export default function Sidebar({ isOpen, onClose }) {
           </div>
           <div>
             <p className="text-white font-semibold text-sm">FinAccounting</p>
-            <p className="text-gray-400 text-xs">Distribution Manager</p>
+            <p className="text-gray-400 text-xs">Portfolio Tracker</p>
           </div>
         </div>
         <button

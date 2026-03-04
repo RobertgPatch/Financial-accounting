@@ -254,6 +254,48 @@ def _brent_xirr(data, lo=-0.99, hi=10.0, tol=1e-10, max_iter=100):
     return None
 
 
+def compute_entity_xirr(entity_id, as_of_date=None):
+    """
+    Compute entity-level XIRR by pooling all cash flows across all assets.
+    Capital calls are negative, distributions are positive, terminal residual
+    is positive. Returns Decimal percentage (e.g., 15.23) or None.
+    """
+    from .models import CapitalCall, DistributionAllocation
+    from .reports import compute_entity_residual
+
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    cash_flows = []
+
+    # Capital calls as negative flows
+    calls = CapitalCall.objects.filter(
+        commitment__entity_id=entity_id
+    )
+    for call in calls:
+        cash_flows.append((call.call_date, -float(call.amount)))
+
+    # Distributions as positive flows
+    allocs = DistributionAllocation.objects.filter(
+        entity_id=entity_id
+    ).select_related('distribution')
+    for alloc in allocs:
+        cash_flows.append((alloc.distribution.distribution_date, float(alloc.amount)))
+
+    # Terminal residual as positive flow
+    residual = compute_entity_residual(entity_id, as_of_date)
+    if residual > 0:
+        cash_flows.append((as_of_date, float(residual)))
+
+    if len(cash_flows) < 2:
+        return None
+
+    result = calculate_xirr(cash_flows)
+    if result is not None:
+        return Decimal(str(round(result * 100, 2)))
+    return None
+
+
 def calculate_asset_irr(asset_id, start_date, end_date):
     """
     Calculate IRR for a single asset using FMV snapshots as investment/terminal

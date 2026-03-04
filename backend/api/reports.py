@@ -4,6 +4,586 @@ from django.db.models import Sum, Count, Avg, F, Q
 from .models import Distribution, DistributionAllocation, Entity, Asset, EntityAssetOwnership, Budget, BudgetLineItem, FMVSnapshot
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# FMV Report constants and generation
+# ═══════════════════════════════════════════════════════════════════════
+
+PLAID_TYPE_MAP = {
+    'depository': 'cash',
+    'investment': 'public_equity',
+    'loan': 'fixed_income',
+    'credit': 'cash',
+}
+
+ASSET_TYPE_LABELS = {
+    'cash': 'Cash & Equivalents',
+    'real_estate': 'Real Estate',
+    'public_equity': 'Public Equity',
+    'private_equity': 'Private Equity',
+    'fixed_income': 'Fixed Income',
+    'hedge_fund': 'Hedge Fund',
+    'crypto': 'Cryptocurrency',
+    'collectible': 'Collectible',
+    'other': 'Other',
+}
+
+
+def _collect_valued_items(entity_ids=None, type_filters=None):
+    """
+    Collect all valued items from Plaid accounts and manual FMV snapshots.
+    Handles dedup (mapped assets not double-counted), entity filtering,
+    and type filtering. Returns list of dicts with Decimal 'value' fields
+    (NOT string-encoded — caller decides serialization).
+    """
+    from plaid_integration.models import PlaidAccount
+
+    # Step 1: Query all Plaid accounts with related data
+    plaid_accounts = PlaidAccount.objects.select_related('plaid_item', 'asset').all()
+    mapped_asset_ids = set(pa.asset_id for pa in plaid_accounts if pa.asset_id)
+
+    # Step 2: Build items from Plaid accounts
+    plaid_items = []
+    for pa in plaid_accounts:
+        if pa.asset_id:
+            asset_type = pa.asset.asset_type
+        else:
+            asset_type = PLAID_TYPE_MAP.get(pa.type, 'other')
+        label = ASSET_TYPE_LABELS.get(asset_type, 'Other')
+        balance = pa.current_balance if pa.current_balance is not None else Decimal('0.00')
+        needs_sync = pa.current_balance is None
+
+        plaid_items.append({
+            'name': pa.name,
+            'value': balance,
+            'source': 'plaid',
+            'asset_type': asset_type,
+            'label': label,
+            'asset_id': pa.asset_id,
+            'snapshot_date': None,
+            'institution': pa.plaid_item.institution_name if pa.plaid_item else None,
+            'subtype': pa.subtype,
+            'plaid_account_id': pa.id,
+            'mask': pa.mask,
+            'needs_sync': needs_sync,
+        })
+
+    # Step 3: Query manual assets with FMV snapshots, excluding mapped ones
+    manual_assets = Asset.objects.filter(
+        fmv_snapshots__isnull=False,
+    ).exclude(
+        id__in=mapped_asset_ids,
+    ).distinct()
+
+    manual_items = []
+    for asset in manual_assets:
+        latest_snapshot = asset.fmv_snapshots.order_by('-snapshot_date').first()
+        if latest_snapshot:
+            manual_items.append({
+                'name': asset.name,
+                'value': latest_snapshot.value,
+                'source': 'manual',
+                'asset_type': asset.asset_type,
+                'label': ASSET_TYPE_LABELS.get(asset.asset_type, 'Other'),
+                'asset_id': asset.id,
+                'snapshot_date': str(latest_snapshot.snapshot_date),
+                'institution': None,
+                'subtype': None,
+                'plaid_account_id': None,
+                'mask': None,
+                'needs_sync': False,
+            })
+
+    # Step 4: Apply entity filter
+    if entity_ids:
+        owned_asset_ids = set(
+            EntityAssetOwnership.objects.filter(
+                entity_id__in=entity_ids,
+            ).values_list('asset_id', flat=True)
+        )
+        manual_items = [item for item in manual_items if item['asset_id'] in owned_asset_ids]
+        plaid_items = [
+            item for item in plaid_items
+            if item['asset_id'] and item['asset_id'] in owned_asset_ids
+        ]
+
+    items = plaid_items + manual_items
+
+    # Step 5: Apply type filters
+    if type_filters:
+        items = [item for item in items if item['asset_type'] in type_filters]
+
+    return items
+
+
+def generate_fmv_report(type_filters=None, entity_ids=None):
+    """
+    Generate a consolidated FMV report combining Plaid account balances
+    and manual asset FMV snapshots.
+    """
+    items = _collect_valued_items(entity_ids=entity_ids, type_filters=type_filters)
+
+    # Aggregate by type
+    type_totals = {}
+    total_fmv = Decimal('0.00')
+
+    for item in items:
+        total_fmv += item['value']
+        t = item['asset_type']
+        if t not in type_totals:
+            type_totals[t] = {
+                'asset_type': t,
+                'label': item['label'],
+                'total_value': Decimal('0.00'),
+                'count': 0,
+            }
+        type_totals[t]['total_value'] += item['value']
+        type_totals[t]['count'] += 1
+
+    by_type = []
+    for t_data in sorted(type_totals.values(), key=lambda x: -x['total_value']):
+        pct = (t_data['total_value'] / total_fmv * 100) if total_fmv != 0 else Decimal('0.00')
+        by_type.append({
+            'asset_type': t_data['asset_type'],
+            'label': t_data['label'],
+            'total_value': str(t_data['total_value']),
+            'count': t_data['count'],
+            'percentage': str(pct.quantize(Decimal('0.01'))),
+        })
+
+    # Convert item values to string for JSON serialization
+    for item in items:
+        item['value'] = str(item['value'])
+
+    return {
+        'total_fmv': str(total_fmv),
+        'item_count': len(items),
+        'filters': {
+            'type_filters': type_filters or [],
+            'entity_ids': [int(eid) for eid in entity_ids] if entity_ids else [],
+        },
+        'by_type': by_type,
+        'items': items,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Portfolio Tracker helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+def compute_entity_residual(entity_id, as_of_date=None):
+    """
+    Compute total residual value for an entity across all owned assets.
+    For each asset owned by the entity via EntityAssetOwnership:
+      - Plaid-mapped: use PlaidAccount.current_balance
+      - Manual: use latest FMVSnapshot.value (on or before as_of_date if given)
+    Multiply by ownership percentage / 100, sum all.
+    Returns Decimal.
+    """
+    from plaid_integration.models import PlaidAccount
+
+    ownerships = EntityAssetOwnership.objects.filter(
+        entity_id=entity_id
+    ).select_related('asset')
+
+    # Build a map of asset_id → PlaidAccount balance for mapped assets
+    plaid_accounts = PlaidAccount.objects.select_related('asset').filter(
+        asset__isnull=False
+    )
+    plaid_balance_map = {}
+    for pa in plaid_accounts:
+        if pa.asset_id and pa.current_balance is not None:
+            plaid_balance_map[pa.asset_id] = pa.current_balance
+
+    total_residual = Decimal('0.00')
+    for ownership in ownerships:
+        asset_id = ownership.asset_id
+        pct = ownership.percentage
+
+        # Prefer Plaid balance for mapped assets
+        if asset_id in plaid_balance_map:
+            asset_value = plaid_balance_map[asset_id]
+        else:
+            # Use latest FMV snapshot
+            snapshots = FMVSnapshot.objects.filter(asset_id=asset_id)
+            if as_of_date:
+                snapshots = snapshots.filter(snapshot_date__lte=as_of_date)
+            latest = snapshots.order_by('-snapshot_date').first()
+            asset_value = latest.value if latest else Decimal('0.00')
+
+        entity_share = asset_value * pct / Decimal('100')
+        total_residual += entity_share
+
+    return total_residual
+
+
+def generate_portfolio_summary(entity_ids=None, as_of_date=None):
+    """Generate Portfolio Summary with entity rollups and PE/VC metrics."""
+    from .models import Commitment, CapitalCall
+    from .performance import compute_entity_xirr
+
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    # Get entities to include
+    if entity_ids:
+        entities = Entity.objects.filter(id__in=entity_ids).order_by('name')
+    else:
+        entities = Entity.objects.all().order_by('name')
+
+    entity_rows = []
+    # Accumulators for "All Entities" row
+    total_original = Decimal('0.00')
+    total_paid_in = Decimal('0.00')
+    total_distributions = Decimal('0.00')
+    total_residual = Decimal('0.00')
+
+    for entity in entities:
+        # Commitment aggregates
+        commitments = Commitment.objects.filter(entity=entity)
+        original_commitment = commitments.aggregate(
+            total=Sum('original_amount')
+        )['total'] or Decimal('0.00')
+
+        # Paid-in from capital calls
+        paid_in = CapitalCall.objects.filter(
+            commitment__entity=entity
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        # % Called and Unfunded
+        if original_commitment > 0:
+            pct_called = (paid_in / original_commitment * 100).quantize(Decimal('0.01'))
+            unfunded = original_commitment - paid_in
+        else:
+            pct_called = None
+            unfunded = Decimal('0.00')
+
+        # Distributions from DistributionAllocation
+        distributions = DistributionAllocation.objects.filter(
+            entity=entity
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        # Residual value
+        residual = compute_entity_residual(entity.id, as_of_date)
+
+        # PE metrics
+        if paid_in > 0:
+            dpi = (distributions / paid_in).quantize(Decimal('0.01'))
+            rvpi = (residual / paid_in).quantize(Decimal('0.01'))
+            tvpi = ((distributions + residual) / paid_in).quantize(Decimal('0.01'))
+        else:
+            dpi = None
+            rvpi = None
+            tvpi = None
+
+        # IRR
+        irr = compute_entity_xirr(entity.id, as_of_date)
+
+        entity_rows.append({
+            'entity_id': entity.id,
+            'entity_name': entity.name,
+            'entity_type': entity.entity_type,
+            'original_commitment': str(original_commitment.quantize(Decimal('0.01'))),
+            'pct_called': str(pct_called) if pct_called is not None else None,
+            'unfunded_commitment': str(unfunded.quantize(Decimal('0.01'))),
+            'paid_in': str(paid_in.quantize(Decimal('0.01'))),
+            'distributions': str(distributions.quantize(Decimal('0.01'))),
+            'residual': str(residual.quantize(Decimal('0.01'))),
+            'dpi': str(dpi) if dpi is not None else None,
+            'rvpi': str(rvpi) if rvpi is not None else None,
+            'tvpi': str(tvpi) if tvpi is not None else None,
+            'irr': str(irr) if irr is not None else None,
+        })
+
+        total_original += original_commitment
+        total_paid_in += paid_in
+        total_distributions += distributions
+        total_residual += residual
+
+    # "All Entities" row — recompute ratios from aggregates
+    if total_paid_in > 0:
+        all_dpi = (total_distributions / total_paid_in).quantize(Decimal('0.01'))
+        all_rvpi = (total_residual / total_paid_in).quantize(Decimal('0.01'))
+        all_tvpi = ((total_distributions + total_residual) / total_paid_in).quantize(Decimal('0.01'))
+    else:
+        all_dpi = None
+        all_rvpi = None
+        all_tvpi = None
+
+    if total_original > 0:
+        all_pct_called = (total_paid_in / total_original * 100).quantize(Decimal('0.01'))
+    else:
+        all_pct_called = None
+
+    # All-entities IRR: pool ALL cash flows across ALL entities
+    all_entity_ids = [e.id for e in entities]
+    all_irr = _compute_pooled_xirr(all_entity_ids, as_of_date)
+
+    all_entities_row = {
+        'original_commitment': str(total_original.quantize(Decimal('0.01'))),
+        'pct_called': str(all_pct_called) if all_pct_called is not None else None,
+        'unfunded_commitment': str((total_original - total_paid_in).quantize(Decimal('0.01'))),
+        'paid_in': str(total_paid_in.quantize(Decimal('0.01'))),
+        'distributions': str(total_distributions.quantize(Decimal('0.01'))),
+        'residual': str(total_residual.quantize(Decimal('0.01'))),
+        'dpi': str(all_dpi) if all_dpi is not None else None,
+        'rvpi': str(all_rvpi) if all_rvpi is not None else None,
+        'tvpi': str(all_tvpi) if all_tvpi is not None else None,
+        'irr': str(all_irr) if all_irr is not None else None,
+    }
+
+    return {
+        'as_of_date': str(as_of_date),
+        'entities': entity_rows,
+        'all_entities': all_entities_row,
+        'filters': {
+            'entity_ids': [int(eid) for eid in entity_ids] if entity_ids else [],
+            'as_of_date': str(as_of_date),
+        },
+    }
+
+
+def _compute_pooled_xirr(entity_ids, as_of_date):
+    """Pool cash flows from multiple entities and compute a single XIRR."""
+    from .models import CapitalCall
+    from .performance import calculate_xirr
+
+    cash_flows = []
+
+    # Capital calls as negative flows
+    calls = CapitalCall.objects.filter(
+        commitment__entity_id__in=entity_ids
+    ).select_related('commitment')
+    for call in calls:
+        cash_flows.append((call.call_date, -float(call.amount)))
+
+    # Distributions as positive flows
+    allocs = DistributionAllocation.objects.filter(
+        entity_id__in=entity_ids
+    ).select_related('distribution')
+    for alloc in allocs:
+        cash_flows.append((alloc.distribution.distribution_date, float(alloc.amount)))
+
+    # Terminal residual as positive flow
+    total_residual = sum(
+        compute_entity_residual(eid, as_of_date) for eid in entity_ids
+    )
+    if total_residual > 0:
+        cash_flows.append((as_of_date, float(total_residual)))
+
+    if len(cash_flows) < 2:
+        return None
+
+    result = calculate_xirr(cash_flows)
+    if result is not None:
+        return Decimal(str(round(result * 100, 2)))
+    return None
+
+
+def generate_asset_class_summary(entity_ids=None, type_filters=None):
+    """Generate Asset Class Summary with allocation breakdown."""
+    items = _collect_valued_items(entity_ids=entity_ids, type_filters=type_filters)
+
+    # Group by asset_type
+    type_totals = {}
+    total_value = Decimal('0.00')
+
+    for item in items:
+        total_value += item['value']
+        t = item['asset_type']
+        if t not in type_totals:
+            type_totals[t] = {
+                'asset_type': t,
+                'label': item['label'],
+                'total_value': Decimal('0.00'),
+                'item_count': 0,
+            }
+        type_totals[t]['total_value'] += item['value']
+        type_totals[t]['item_count'] += 1
+
+    by_class = []
+    for t_data in sorted(type_totals.values(), key=lambda x: -x['total_value']):
+        pct = (t_data['total_value'] / total_value * 100).quantize(Decimal('0.01')) if total_value != 0 else Decimal('0.00')
+        by_class.append({
+            'asset_type': t_data['asset_type'],
+            'label': t_data['label'],
+            'total_value': str(t_data['total_value'].quantize(Decimal('0.01'))),
+            'pct_of_portfolio': str(pct),
+            'item_count': t_data['item_count'],
+        })
+
+    # Build items list (string-encoded values)
+    items_out = []
+    for item in items:
+        items_out.append({
+            'name': item['name'],
+            'value': str(item['value'].quantize(Decimal('0.01'))),
+            'source': item['source'],
+            'asset_type': item['asset_type'],
+            'institution': item.get('institution'),
+            'snapshot_date': item.get('snapshot_date'),
+        })
+
+    return {
+        'total_value': str(total_value.quantize(Decimal('0.01'))),
+        'item_count': len(items),
+        'by_class': by_class,
+        'items': items_out,
+        'filters': {
+            'entity_ids': [int(eid) for eid in entity_ids] if entity_ids else [],
+            'type_filters': type_filters or [],
+        },
+    }
+
+
+def generate_investment_performance(entity_ids=None, as_of_date=None):
+    """Generate Investment Performance view — per-asset and per-entity metrics."""
+    from .models import Commitment, CapitalCall
+    from .performance import calculate_xirr, compute_entity_xirr
+
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    # Get commitments (optionally filtered by entity)
+    commitments = Commitment.objects.select_related('entity', 'asset').all()
+    if entity_ids:
+        commitments = commitments.filter(entity_id__in=entity_ids)
+
+    investments = []
+    entity_data = {}  # entity_id -> accumulated data
+
+    for commitment in commitments:
+        entity = commitment.entity
+        asset = commitment.asset
+
+        # Per-asset paid-in
+        paid_in = commitment.capital_calls.aggregate(
+            total=Sum('amount')
+        )['total'] or Decimal('0.00')
+
+        # Per-asset distributions
+        distributions = DistributionAllocation.objects.filter(
+            entity=entity,
+            distribution__asset=asset,
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        # Per-asset residual (pro-rated by ownership)
+        ownership = EntityAssetOwnership.objects.filter(
+            entity=entity, asset=asset
+        ).first()
+        pct = ownership.percentage if ownership else Decimal('0')
+
+        # Get asset value (Plaid or FMV)
+        from plaid_integration.models import PlaidAccount
+        plaid_acct = PlaidAccount.objects.filter(asset=asset).first()
+        if plaid_acct and plaid_acct.current_balance is not None:
+            asset_value = plaid_acct.current_balance
+        else:
+            snap = FMVSnapshot.objects.filter(asset=asset)
+            if as_of_date:
+                snap = snap.filter(snapshot_date__lte=as_of_date)
+            latest = snap.order_by('-snapshot_date').first()
+            asset_value = latest.value if latest else Decimal('0.00')
+
+        residual = asset_value * pct / Decimal('100')
+
+        # Per-asset ratios
+        if paid_in > 0:
+            dpi = (distributions / paid_in).quantize(Decimal('0.01'))
+            rvpi = (residual / paid_in).quantize(Decimal('0.01'))
+            tvpi = ((distributions + residual) / paid_in).quantize(Decimal('0.01'))
+        else:
+            dpi = None
+            rvpi = None
+            tvpi = None
+
+        # Per-asset IRR
+        asset_cash_flows = []
+        for call in commitment.capital_calls.all():
+            asset_cash_flows.append((call.call_date, -float(call.amount)))
+        asset_allocs = DistributionAllocation.objects.filter(
+            entity=entity, distribution__asset=asset,
+        ).select_related('distribution')
+        for alloc in asset_allocs:
+            asset_cash_flows.append((alloc.distribution.distribution_date, float(alloc.amount)))
+        if residual > 0:
+            asset_cash_flows.append((as_of_date, float(residual)))
+
+        asset_irr = None
+        if len(asset_cash_flows) >= 2:
+            result = calculate_xirr(asset_cash_flows)
+            if result is not None:
+                asset_irr = Decimal(str(round(result * 100, 2)))
+
+        investments.append({
+            'asset_id': asset.id,
+            'asset_name': asset.name,
+            'asset_type': asset.asset_type,
+            'entity_id': entity.id,
+            'entity_name': entity.name,
+            'original_commitment': str(commitment.original_amount.quantize(Decimal('0.01'))),
+            'paid_in': str(paid_in.quantize(Decimal('0.01'))),
+            'distributions': str(distributions.quantize(Decimal('0.01'))),
+            'residual': str(residual.quantize(Decimal('0.01'))),
+            'dpi': str(dpi) if dpi is not None else None,
+            'rvpi': str(rvpi) if rvpi is not None else None,
+            'tvpi': str(tvpi) if tvpi is not None else None,
+            'irr': str(asset_irr) if asset_irr is not None else None,
+        })
+
+        # Accumulate for entity totals
+        eid = entity.id
+        if eid not in entity_data:
+            entity_data[eid] = {
+                'entity_id': eid,
+                'entity_name': entity.name,
+                'paid_in': Decimal('0.00'),
+                'distributions': Decimal('0.00'),
+                'residual': Decimal('0.00'),
+            }
+        entity_data[eid]['paid_in'] += paid_in
+        entity_data[eid]['distributions'] += distributions
+        entity_data[eid]['residual'] += residual
+
+    # Build entity_totals with pooled XIRR
+    entity_totals = []
+    for eid, edata in sorted(entity_data.items(), key=lambda x: x[1]['entity_name']):
+        ep = edata['paid_in']
+        ed = edata['distributions']
+        er = edata['residual']
+        if ep > 0:
+            e_dpi = (ed / ep).quantize(Decimal('0.01'))
+            e_rvpi = (er / ep).quantize(Decimal('0.01'))
+            e_tvpi = ((ed + er) / ep).quantize(Decimal('0.01'))
+        else:
+            e_dpi = None
+            e_rvpi = None
+            e_tvpi = None
+
+        e_irr = compute_entity_xirr(eid, as_of_date)
+
+        entity_totals.append({
+            'entity_id': eid,
+            'entity_name': edata['entity_name'],
+            'paid_in': str(ep.quantize(Decimal('0.01'))),
+            'distributions': str(ed.quantize(Decimal('0.01'))),
+            'residual': str(er.quantize(Decimal('0.01'))),
+            'dpi': str(e_dpi) if e_dpi is not None else None,
+            'rvpi': str(e_rvpi) if e_rvpi is not None else None,
+            'tvpi': str(e_tvpi) if e_tvpi is not None else None,
+            'irr': str(e_irr) if e_irr is not None else None,
+        })
+
+    return {
+        'as_of_date': str(as_of_date),
+        'investments': investments,
+        'entity_totals': entity_totals,
+        'filters': {
+            'entity_ids': [int(eid) for eid in entity_ids] if entity_ids else [],
+            'as_of_date': str(as_of_date),
+        },
+    }
+
+
 def generate_distribution_report(
     period_type='yearly',
     year=None,
