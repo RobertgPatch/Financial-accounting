@@ -9,15 +9,21 @@ from rest_framework.response import Response
 from .models import (
     Entity, Asset, EntityAssetOwnership, Distribution,
     DistributionAllocation, Budget, BudgetLineItem,
-    AssetTag, FMVSnapshot,
+    AssetTag, FMVSnapshot, Commitment, CapitalCall,
 )
 from .serializers import (
     EntitySerializer, AssetSerializer, EntityAssetOwnershipSerializer,
     DistributionSerializer, DistributionWriteSerializer, DistributionAllocationSerializer,
     BudgetSerializer, BudgetWriteSerializer, BudgetLineItemSerializer,
     AssetTagSerializer, FMVSnapshotSerializer,
+    CommitmentSerializer, CapitalCallSerializer,
 )
-from .reports import generate_distribution_report, generate_dashboard_summary, generate_portfolio_by_class, generate_net_worth_summary
+from .reports import (
+    generate_distribution_report, generate_dashboard_summary,
+    generate_portfolio_by_class, generate_net_worth_summary, generate_fmv_report,
+    generate_portfolio_summary, generate_asset_class_summary,
+    generate_investment_performance,
+)
 from .excel_export import export_distribution_report
 from .performance import get_asset_performance, get_entity_performance, get_performance_summary
 
@@ -273,6 +279,55 @@ def export_report(request):
     return response
 
 
+def _parse_fmv_params(data):
+    """Parse FMV report request parameters."""
+    type_filters = data.get('type_filters')
+    if type_filters and isinstance(type_filters, list):
+        type_filters = [str(t) for t in type_filters if t]
+    elif type_filters and isinstance(type_filters, str):
+        type_filters = [t.strip() for t in type_filters.split(',') if t.strip()]
+    else:
+        type_filters = None
+
+    entity_ids_raw = data.get('entity_ids')
+    entity_ids = None
+    if entity_ids_raw:
+        if isinstance(entity_ids_raw, (list, tuple)):
+            entity_ids = [int(v) for v in entity_ids_raw if str(v).strip()]
+        else:
+            entity_ids = [int(item.strip()) for item in str(entity_ids_raw).split(',') if item.strip()]
+
+    return {
+        'type_filters': type_filters if type_filters else None,
+        'entity_ids': entity_ids if entity_ids else None,
+    }
+
+
+@api_view(['POST'])
+def fmv_report(request):
+    """POST /api/reports/fmv/generate/ — Generate FMV report."""
+    params = _parse_fmv_params(request.data)
+    report = generate_fmv_report(**params)
+    return Response(report)
+
+
+@api_view(['POST'])
+def fmv_export(request):
+    """POST /api/reports/fmv/export/ — Export FMV report to Excel."""
+    from .excel_export import export_fmv_report
+    params = _parse_fmv_params(request.data)
+    report = generate_fmv_report(**params)
+    excel_buf = export_fmv_report(report)
+    today = date.today().isoformat()
+    filename = f"fmv_report_{today}.xlsx"
+    response = HttpResponse(
+        excel_buf.read(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
+
+
 @api_view(['GET'])
 def dashboard_summary(request):
     """Quick KPI summary for the dashboard, including net worth."""
@@ -347,3 +402,225 @@ def performance_summary(request):
             return Response({'error': 'Invalid calc_date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
     data = get_performance_summary(calc_date)
     return Response(data)
+
+
+# ---------------------------------------------------------------------------
+# Commitment / Capital-Call CRUD ViewSets
+# ---------------------------------------------------------------------------
+
+class CommitmentViewSet(viewsets.ModelViewSet):
+    """CRUD for Commitment records.
+
+    Supports query-string filters:
+        ?entity=<id>   — filter by entity
+        ?asset=<id>    — filter by asset
+    """
+    serializer_class = CommitmentSerializer
+
+    def get_queryset(self):
+        qs = Commitment.objects.select_related('entity', 'asset').all()
+        entity_id = self.request.query_params.get('entity')
+        asset_id = self.request.query_params.get('asset')
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception as exc:
+            if 'unique' in str(exc).lower():
+                return Response(
+                    {'error': 'A commitment already exists for this entity/asset pair.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            raise
+
+
+class CapitalCallViewSet(viewsets.ModelViewSet):
+    """CRUD for CapitalCall records.
+
+    Supports query-string filters:
+        ?commitment=<id> — filter by commitment
+    """
+    serializer_class = CapitalCallSerializer
+
+    def get_queryset(self):
+        qs = CapitalCall.objects.select_related('commitment', 'commitment__entity', 'commitment__asset').all()
+        commitment_id = self.request.query_params.get('commitment')
+        if commitment_id:
+            qs = qs.filter(commitment_id=commitment_id)
+        return qs
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Tracker API Views
+# ---------------------------------------------------------------------------
+
+def _parse_portfolio_params(data):
+    """Parse common portfolio request parameters (entity_ids, as_of_date, start_date, end_date, type_filters)."""
+    entity_ids_raw = data.get('entity_ids')
+    entity_ids = None
+    if entity_ids_raw:
+        if isinstance(entity_ids_raw, (list, tuple)):
+            entity_ids = [int(v) for v in entity_ids_raw if str(v).strip()]
+        else:
+            entity_ids = [int(item.strip()) for item in str(entity_ids_raw).split(',') if item.strip()]
+
+    as_of_date = None
+    as_of_raw = data.get('as_of_date')
+    if as_of_raw:
+        try:
+            as_of_date = date.fromisoformat(str(as_of_raw))
+        except ValueError:
+            pass  # fall back to None → reports default to today
+
+    # Date range filtering
+    start_date = None
+    start_raw = data.get('start_date')
+    if start_raw:
+        try:
+            start_date = date.fromisoformat(str(start_raw))
+        except ValueError:
+            pass
+
+    end_date = None
+    end_raw = data.get('end_date')
+    if end_raw:
+        try:
+            end_date = date.fromisoformat(str(end_raw))
+        except ValueError:
+            pass
+
+    # If end_date provided but no as_of_date, use end_date as as_of_date
+    if end_date and not as_of_date:
+        as_of_date = end_date
+
+    type_filters = data.get('type_filters')
+    if type_filters and isinstance(type_filters, list):
+        type_filters = [str(t) for t in type_filters if t]
+    elif type_filters and isinstance(type_filters, str):
+        type_filters = [t.strip() for t in type_filters.split(',') if t.strip()]
+    else:
+        type_filters = None
+
+    return {
+        'entity_ids': entity_ids if entity_ids else None,
+        'as_of_date': as_of_date,
+        'start_date': start_date,
+        'end_date': end_date,
+        'type_filters': type_filters if type_filters else None,
+    }
+
+
+@api_view(['POST'])
+def portfolio_summary(request):
+    """POST /api/portfolio/summary/ — Entity-level portfolio rollup."""
+    params = _parse_portfolio_params(request.data)
+    report = generate_portfolio_summary(
+        entity_ids=params['entity_ids'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
+    )
+    return Response(report)
+
+
+@api_view(['POST'])
+def asset_class_summary(request):
+    """POST /api/portfolio/asset-class-summary/ — Asset-class breakdown."""
+    params = _parse_portfolio_params(request.data)
+    report = generate_asset_class_summary(
+        entity_ids=params['entity_ids'],
+        type_filters=params['type_filters'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
+    )
+    return Response(report)
+
+
+@api_view(['POST'])
+def investment_performance(request):
+    """POST /api/portfolio/performance/ — Per-investment performance."""
+    params = _parse_portfolio_params(request.data)
+    report = generate_investment_performance(
+        entity_ids=params['entity_ids'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
+    )
+    return Response(report)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Excel Export Views
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+def portfolio_summary_export(request):
+    """POST /api/portfolio/summary/export/ — Export portfolio summary to Excel."""
+    from .excel_export import export_portfolio_summary as _export
+    params = _parse_portfolio_params(request.data)
+    report = generate_portfolio_summary(
+        entity_ids=params['entity_ids'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
+    )
+    excel_buf = _export(report)
+    today = date.today().isoformat()
+    filename = f"portfolio_summary_{today}.xlsx"
+    response = HttpResponse(
+        excel_buf.read(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(['POST'])
+def asset_class_summary_export(request):
+    """POST /api/portfolio/asset-class-summary/export/ — Export asset-class summary to Excel."""
+    from .excel_export import export_asset_class_summary as _export
+    params = _parse_portfolio_params(request.data)
+    report = generate_asset_class_summary(
+        entity_ids=params['entity_ids'],
+        type_filters=params['type_filters'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
+    )
+    excel_buf = _export(report)
+    today = date.today().isoformat()
+    filename = f"asset_class_summary_{today}.xlsx"
+    response = HttpResponse(
+        excel_buf.read(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(['POST'])
+def investment_performance_export(request):
+    """POST /api/portfolio/performance/export/ — Export investment performance to Excel."""
+    from .excel_export import export_investment_performance as _export
+    params = _parse_portfolio_params(request.data)
+    report = generate_investment_performance(
+        entity_ids=params['entity_ids'],
+        as_of_date=params['as_of_date'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
+    )
+    excel_buf = _export(report)
+    today = date.today().isoformat()
+    filename = f"investment_performance_{today}.xlsx"
+    response = HttpResponse(
+        excel_buf.read(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response

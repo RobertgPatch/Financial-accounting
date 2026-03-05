@@ -206,3 +206,36 @@ class FMVSnapshot(models.Model):
             raise ValidationError({'value': 'FMV value must be >= 0.'})
         if self.snapshot_date and self.snapshot_date > date_cls.today():
             raise ValidationError({'snapshot_date': 'Snapshot date cannot be in the future.'})
+
+
+class Commitment(models.Model):
+    """One commitment per entity-asset pair tracking PE/VC fund commitments."""
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name='commitments')
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='commitments')
+    commitment_date = models.DateField()
+    original_amount = models.DecimalField(max_digits=15, decimal_places=2)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('entity', 'asset')]
+        ordering = ['entity', 'asset']
+
+    def __str__(self):
+        return f"{self.entity.name} → {self.asset.name} (${self.original_amount})"
+
+
+class CapitalCall(models.Model):
+    """Capital call (draw-down) against a Commitment."""
+    commitment = models.ForeignKey(Commitment, on_delete=models.CASCADE, related_name='capital_calls')
+    call_date = models.DateField()
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['call_date']
+
+    def __str__(self):
+        return f"Call ${self.amount} on {self.call_date} for {self.commitment}"

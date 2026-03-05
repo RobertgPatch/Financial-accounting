@@ -6,8 +6,9 @@ from rest_framework import status
 from decimal import Decimal
 import datetime
 
-from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation, Budget, BudgetLineItem, AssetTag, FMVSnapshot
-from .performance import calculate_twr, calculate_xirr, calculate_asset_irr, resolve_period, annualize_return
+from .models import Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation, Budget, BudgetLineItem, AssetTag, FMVSnapshot, Commitment, CapitalCall
+from .performance import calculate_twr, calculate_xirr, calculate_asset_irr, resolve_period, annualize_return, compute_entity_xirr
+from .reports import generate_portfolio_summary, generate_asset_class_summary, generate_investment_performance
 
 
 class EntityAPITest(TestCase):
@@ -858,3 +859,867 @@ class DashboardNetWorthTest(TestCase):
         self.assertIn('by_entity', nw)
         self.assertEqual(len(nw['by_entity']), 1)
         self.assertEqual(nw['by_entity'][0]['entity_name'], 'Net Worth Entity')
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# FMV Report Tests (Feature 002: FMV Auto-Reporting)
+# ═══════════════════════════════════════════════════════════════════════
+
+from plaid_integration.models import PlaidItem, PlaidAccount
+from api.reports import generate_fmv_report, PLAID_TYPE_MAP, ASSET_TYPE_LABELS
+
+
+class FMVReportTests(TestCase):
+    """T006: Core FMV report generation tests."""
+
+    def setUp(self):
+        self.client = APIClient()
+        # Create a Plaid item (institution)
+        self.plaid_item = PlaidItem.objects.create(
+            item_id='test_item_1',
+            access_token='test_token_1',
+            institution_name='Chase',
+            status='active',
+        )
+        # Create Plaid accounts
+        self.checking = PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='checking_1',
+            name='Chase Checking',
+            mask='1234',
+            type='depository',
+            subtype='checking',
+            current_balance=Decimal('45000.00'),
+        )
+        self.investment = PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='invest_1',
+            name='Fidelity 401k',
+            mask='5678',
+            type='investment',
+            subtype='401k',
+            current_balance=Decimal('185000.00'),
+        )
+
+    def test_basic_report_generation(self):
+        """Test basic FMV report with Plaid accounts returns correct total and items."""
+        report = generate_fmv_report()
+        self.assertEqual(report['total_fmv'], '230000.00')
+        self.assertEqual(report['item_count'], 2)
+        self.assertEqual(len(report['items']), 2)
+        # Check items include both accounts
+        names = [item['name'] for item in report['items']]
+        self.assertIn('Chase Checking', names)
+        self.assertIn('Fidelity 401k', names)
+
+    def test_plaid_type_map_categorization(self):
+        """Test PLAID_TYPE_MAP categorizes types correctly."""
+        self.assertEqual(PLAID_TYPE_MAP['depository'], 'cash')
+        self.assertEqual(PLAID_TYPE_MAP['investment'], 'public_equity')
+        self.assertEqual(PLAID_TYPE_MAP['loan'], 'fixed_income')
+        self.assertEqual(PLAID_TYPE_MAP['credit'], 'cash')
+        # Verify report uses correct type mapping
+        report = generate_fmv_report()
+        checking_item = next(i for i in report['items'] if i['name'] == 'Chase Checking')
+        invest_item = next(i for i in report['items'] if i['name'] == 'Fidelity 401k')
+        self.assertEqual(checking_item['asset_type'], 'cash')
+        self.assertEqual(invest_item['asset_type'], 'public_equity')
+
+    def test_double_count_prevention(self):
+        """Test mapped Plaid account excludes manual asset's FMV snapshot."""
+        # Create a manual asset and map a Plaid account to it
+        asset = Asset.objects.create(name='My Investment', asset_type='public_equity')
+        FMVSnapshot.objects.create(
+            asset=asset, snapshot_date=datetime.date(2026, 2, 15),
+            value=Decimal('200000.00'), source='manual',
+        )
+        # Map the investment Plaid account to this asset
+        self.investment.asset = asset
+        self.investment.save()
+
+        report = generate_fmv_report()
+        # The manual asset should NOT appear (Plaid account replaces it)
+        manual_items = [i for i in report['items'] if i['source'] == 'manual']
+        self.assertEqual(len(manual_items), 0)
+        # Plaid account should use the mapped asset's type
+        invest_item = next(i for i in report['items'] if i['name'] == 'Fidelity 401k')
+        self.assertEqual(invest_item['asset_type'], 'public_equity')
+        # Total should be Plaid balances only (45000 + 185000)
+        self.assertEqual(report['total_fmv'], '230000.00')
+
+    def test_empty_state(self):
+        """Test empty state returns zero total and empty items."""
+        PlaidAccount.objects.all().delete()
+        report = generate_fmv_report()
+        self.assertEqual(report['total_fmv'], '0.00')
+        self.assertEqual(report['item_count'], 0)
+        self.assertEqual(report['items'], [])
+        self.assertEqual(report['by_type'], [])
+
+    def test_negative_plaid_balance(self):
+        """Test negative Plaid balance (credit card) reduces total."""
+        PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='credit_1',
+            name='Visa Credit Card',
+            mask='9012',
+            type='credit',
+            subtype='credit card',
+            current_balance=Decimal('-3500.00'),
+        )
+        report = generate_fmv_report()
+        # 45000 + 185000 + (-3500) = 226500
+        self.assertEqual(report['total_fmv'], '226500.00')
+        credit_item = next(i for i in report['items'] if i['name'] == 'Visa Credit Card')
+        self.assertEqual(credit_item['value'], '-3500.00')
+        self.assertEqual(credit_item['asset_type'], 'cash')
+
+    def test_plaid_null_balance_needs_sync(self):
+        """Test Plaid account with current_balance=None appears with value 0 and needs_sync."""
+        PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='unsynced_1',
+            name='Unsynced Account',
+            type='depository',
+            current_balance=None,
+        )
+        report = generate_fmv_report()
+        unsynced = next(i for i in report['items'] if i['name'] == 'Unsynced Account')
+        self.assertEqual(unsynced['value'], '0.00')
+        self.assertTrue(unsynced['needs_sync'])
+
+    def test_manual_asset_included(self):
+        """Test manual asset with FMV snapshot is included in report."""
+        asset = Asset.objects.create(name='Beach House', asset_type='real_estate')
+        FMVSnapshot.objects.create(
+            asset=asset, snapshot_date=datetime.date(2026, 2, 15),
+            value=Decimal('500000.00'), source='manual',
+        )
+        report = generate_fmv_report()
+        self.assertEqual(report['item_count'], 3)
+        manual = next(i for i in report['items'] if i['name'] == 'Beach House')
+        self.assertEqual(manual['source'], 'manual')
+        self.assertEqual(manual['value'], '500000.00')
+        self.assertEqual(manual['asset_type'], 'real_estate')
+
+    def test_manual_asset_without_snapshot_excluded(self):
+        """Test manual asset without FMV snapshot is NOT included."""
+        Asset.objects.create(name='No Snapshot Asset', asset_type='other')
+        report = generate_fmv_report()
+        names = [i['name'] for i in report['items']]
+        self.assertNotIn('No Snapshot Asset', names)
+
+
+class FMVReportAPIEndpointTests(TestCase):
+    """T008: FMV API endpoint tests."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.plaid_item = PlaidItem.objects.create(
+            item_id='api_test_item',
+            access_token='api_test_token',
+            institution_name='Test Bank',
+            status='active',
+        )
+        PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='api_checking_1',
+            name='Test Checking',
+            mask='1111',
+            type='depository',
+            subtype='checking',
+            current_balance=Decimal('10000.00'),
+        )
+
+    def test_fmv_generate_endpoint_returns_200(self):
+        """Test POST /api/reports/fmv/generate/ returns 200 with correct shape."""
+        response = self.client.post('/api/reports/fmv/generate/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('total_fmv', response.data)
+        self.assertIn('item_count', response.data)
+        self.assertIn('filters', response.data)
+        self.assertIn('by_type', response.data)
+        self.assertIn('items', response.data)
+
+    def test_plaid_accounts_auto_included(self):
+        """Test Plaid accounts are auto-included without any mapping."""
+        response = self.client.post('/api/reports/fmv/generate/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['item_count'], 1)
+        self.assertEqual(response.data['items'][0]['source'], 'plaid')
+
+    def test_needs_sync_flag(self):
+        """Test needs_sync is True when current_balance is None."""
+        PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='unsynced_api',
+            name='Unsynced API Account',
+            type='depository',
+            current_balance=None,
+        )
+        response = self.client.post('/api/reports/fmv/generate/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        unsynced = next(i for i in response.data['items'] if i['name'] == 'Unsynced API Account')
+        self.assertTrue(unsynced['needs_sync'])
+        self.assertEqual(unsynced['value'], '0.00')
+
+
+class FMVReportTypeFilterTests(TestCase):
+    """T012: Type filter tests for FMV report."""
+
+    def setUp(self):
+        self.plaid_item = PlaidItem.objects.create(
+            item_id='filter_test_item',
+            access_token='filter_test_token',
+            institution_name='Filter Bank',
+            status='active',
+        )
+        PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='filter_checking',
+            name='Filter Checking',
+            type='depository',
+            current_balance=Decimal('5000.00'),
+        )
+        PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='filter_invest',
+            name='Filter Investment',
+            type='investment',
+            current_balance=Decimal('20000.00'),
+        )
+
+    def test_single_type_filter(self):
+        """Test type_filters=['cash'] returns only cash-typed items."""
+        report = generate_fmv_report(type_filters=['cash'])
+        self.assertEqual(report['item_count'], 1)
+        self.assertEqual(report['items'][0]['asset_type'], 'cash')
+
+    def test_multiple_type_filters(self):
+        """Test multiple filters returns combined results."""
+        report = generate_fmv_report(type_filters=['cash', 'public_equity'])
+        self.assertEqual(report['item_count'], 2)
+        types = {i['asset_type'] for i in report['items']}
+        self.assertEqual(types, {'cash', 'public_equity'})
+
+    def test_filter_no_matching_items(self):
+        """Test filter with no matching items returns empty."""
+        report = generate_fmv_report(type_filters=['real_estate'])
+        self.assertEqual(report['total_fmv'], '0.00')
+        self.assertEqual(report['item_count'], 0)
+        self.assertEqual(report['items'], [])
+
+    def test_no_filter_returns_all(self):
+        """Test filter=None returns all items."""
+        report = generate_fmv_report(type_filters=None)
+        self.assertEqual(report['item_count'], 2)
+
+
+class FMVReportEntityFilterTests(TestCase):
+    """T014: Entity filter and manual asset tests for FMV report."""
+
+    def setUp(self):
+        self.entity = Entity.objects.create(name='Test Trust', entity_type='trust')
+        self.other_entity = Entity.objects.create(name='Other LLC', entity_type='LLC')
+
+        # Manual asset owned by test entity
+        self.owned_asset = Asset.objects.create(name='Owned Property', asset_type='real_estate')
+        FMVSnapshot.objects.create(
+            asset=self.owned_asset, snapshot_date=datetime.date(2026, 1, 15),
+            value=Decimal('300000.00'), source='manual',
+        )
+        EntityAssetOwnership.objects.create(
+            entity=self.entity, asset=self.owned_asset,
+            percentage=Decimal('100.0000'),
+            effective_date=datetime.date(2025, 1, 1),
+        )
+
+        # Manual asset owned by other entity
+        self.other_asset = Asset.objects.create(name='Other Property', asset_type='real_estate')
+        FMVSnapshot.objects.create(
+            asset=self.other_asset, snapshot_date=datetime.date(2026, 1, 15),
+            value=Decimal('200000.00'), source='manual',
+        )
+        EntityAssetOwnership.objects.create(
+            entity=self.other_entity, asset=self.other_asset,
+            percentage=Decimal('100.0000'),
+            effective_date=datetime.date(2025, 1, 1),
+        )
+
+        # Plaid setup
+        self.plaid_item = PlaidItem.objects.create(
+            item_id='entity_test_item',
+            access_token='entity_test_token',
+            institution_name='Entity Bank',
+            status='active',
+        )
+
+        # Unmapped Plaid account
+        self.unmapped_plaid = PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='entity_unmapped',
+            name='Unmapped Checking',
+            type='depository',
+            current_balance=Decimal('10000.00'),
+        )
+
+        # Plaid account mapped to owned asset
+        self.mapped_plaid = PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='entity_mapped',
+            name='Mapped Account',
+            type='investment',
+            current_balance=Decimal('50000.00'),
+            asset=self.owned_asset,
+        )
+
+    def test_entity_filter_excludes_unmapped_plaid(self):
+        """Test entity filter excludes unmapped Plaid accounts."""
+        report = generate_fmv_report(entity_ids=[self.entity.id])
+        names = [i['name'] for i in report['items']]
+        self.assertNotIn('Unmapped Checking', names)
+
+    def test_entity_filter_includes_owned_manual_assets(self):
+        """Test entity filter includes manual assets with ownership records."""
+        # Note: self.owned_asset is mapped to Plaid, so it won't appear as manual
+        # Let's create an unmapped manual asset owned by entity
+        unmapped_manual = Asset.objects.create(name='Unmapped Manual', asset_type='cash')
+        FMVSnapshot.objects.create(
+            asset=unmapped_manual, snapshot_date=datetime.date(2026, 1, 15),
+            value=Decimal('25000.00'), source='manual',
+        )
+        EntityAssetOwnership.objects.create(
+            entity=self.entity, asset=unmapped_manual,
+            percentage=Decimal('100.0000'),
+            effective_date=datetime.date(2025, 1, 1),
+        )
+        report = generate_fmv_report(entity_ids=[self.entity.id])
+        names = [i['name'] for i in report['items']]
+        self.assertIn('Unmapped Manual', names)
+
+    def test_entity_filter_includes_mapped_plaid_for_owned_asset(self):
+        """Test entity filter includes Plaid accounts mapped to assets owned by entity."""
+        report = generate_fmv_report(entity_ids=[self.entity.id])
+        names = [i['name'] for i in report['items']]
+        self.assertIn('Mapped Account', names)
+
+    def test_manual_asset_without_snapshot_excluded(self):
+        """Test manual asset without FMV snapshot is excluded."""
+        Asset.objects.create(name='No Snapshot', asset_type='other')
+        report = generate_fmv_report()
+        names = [i['name'] for i in report['items']]
+        self.assertNotIn('No Snapshot', names)
+
+    def test_manual_asset_source_correct(self):
+        """Test manual asset with FMV snapshot appears with correct source."""
+        # Create an unmapped manual asset
+        standalone = Asset.objects.create(name='Standalone Asset', asset_type='crypto')
+        FMVSnapshot.objects.create(
+            asset=standalone, snapshot_date=datetime.date(2026, 2, 1),
+            value=Decimal('15000.00'), source='manual',
+        )
+        report = generate_fmv_report()
+        manual = next(i for i in report['items'] if i['name'] == 'Standalone Asset')
+        self.assertEqual(manual['source'], 'manual')
+
+    def test_double_count_prevention_with_entity_filter(self):
+        """Test mapped asset's FMV snapshot excluded when entity filter active."""
+        report = generate_fmv_report(entity_ids=[self.entity.id])
+        # Owned Property is mapped to a Plaid account, so it shouldn't appear as manual
+        manual_items = [i for i in report['items'] if i['source'] == 'manual' and i['name'] == 'Owned Property']
+        self.assertEqual(len(manual_items), 0)
+        # The mapped Plaid account should be there
+        plaid_items = [i for i in report['items'] if i['name'] == 'Mapped Account']
+        self.assertEqual(len(plaid_items), 1)
+
+
+class DistributionReportNoFMVTest(TestCase):
+    """T010: Distribution report no-FMV assertion."""
+
+    def test_distribution_report_has_no_fmv_keys(self):
+        """Test generate_distribution_report() does NOT contain FMV keys."""
+        from api.reports import generate_distribution_report
+        report = generate_distribution_report()
+        fmv_keys = {'total_fmv', 'fmv', 'net_worth', 'by_type'}
+        for key in fmv_keys:
+            self.assertNotIn(key, report, f"Distribution report should not contain '{key}'")
+        # Confirm expected keys are present
+        expected_keys = {'period', 'summary', 'by_entity', 'by_asset', 'detail',
+                        'budget_comparison', 'yoy_comparison', 'retained_earnings'}
+        for key in expected_keys:
+            self.assertIn(key, report, f"Distribution report missing expected key '{key}'")
+
+
+class FMVExportEndpointTests(TestCase):
+    """T019: FMV export endpoint tests."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.plaid_item = PlaidItem.objects.create(
+            item_id='export_test_item',
+            access_token='export_test_token',
+            institution_name='Export Bank',
+            status='active',
+        )
+        PlaidAccount.objects.create(
+            plaid_item=self.plaid_item,
+            account_id='export_checking',
+            name='Export Checking',
+            mask='4444',
+            type='depository',
+            current_balance=Decimal('15000.00'),
+        )
+
+    def test_fmv_export_returns_xlsx(self):
+        """Test POST /api/reports/fmv/export/ returns 200 with xlsx content type."""
+        response = self.client.post('/api/reports/fmv/export/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+
+    def test_fmv_export_content_disposition(self):
+        """Test Content-Disposition header contains fmv_report_ and .xlsx."""
+        response = self.client.post('/api/reports/fmv/export/', {}, format='json')
+        self.assertIn('fmv_report_', response['Content-Disposition'])
+        self.assertIn('.xlsx', response['Content-Disposition'])
+
+    def test_fmv_export_with_type_filters(self):
+        """Test export with type_filters produces valid response."""
+        response = self.client.post(
+            '/api/reports/fmv/export/',
+            {'type_filters': ['cash']},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+
+
+# ===========================================================================
+# Portfolio Tracker Tests
+# ===========================================================================
+
+class CommitmentAPITest(TestCase):
+    """Tests for Commitment CRUD endpoints."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.entity = Entity.objects.create(name='Test Entity', entity_type='LLC')
+        self.asset = Asset.objects.create(name='PE Fund I', asset_type='private_equity')
+
+    def test_create_commitment(self):
+        data = {
+            'entity': self.entity.id,
+            'asset': self.asset.id,
+            'commitment_date': '2024-01-15',
+            'original_amount': '1000000.00',
+        }
+        response = self.client.post('/api/commitments/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['original_amount'], '1000000.00')
+        self.assertEqual(response.data['entity_name'], 'Test Entity')
+        self.assertEqual(response.data['asset_name'], 'PE Fund I')
+        self.assertEqual(response.data['paid_in'], '0.00')
+        self.assertEqual(response.data['pct_called'], '0.00')
+        self.assertEqual(response.data['unfunded'], '1000000.00')
+        self.assertEqual(response.data['call_count'], 0)
+
+    def test_unique_constraint(self):
+        Commitment.objects.create(
+            entity=self.entity,
+            asset=self.asset,
+            commitment_date='2024-01-01',
+            original_amount=Decimal('500000'),
+        )
+        data = {
+            'entity': self.entity.id,
+            'asset': self.asset.id,
+            'commitment_date': '2024-06-01',
+            'original_amount': '250000.00',
+        }
+        response = self.client.post('/api/commitments/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_list_commitments_filter_entity(self):
+        Commitment.objects.create(
+            entity=self.entity, asset=self.asset,
+            commitment_date='2024-01-01', original_amount=Decimal('100000'),
+        )
+        response = self.client.get(f'/api/commitments/?entity={self.entity.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['results']), 1)
+
+    def test_update_commitment(self):
+        c = Commitment.objects.create(
+            entity=self.entity, asset=self.asset,
+            commitment_date='2024-01-01', original_amount=Decimal('100000'),
+        )
+        response = self.client.patch(
+            f'/api/commitments/{c.id}/',
+            {'original_amount': '200000.00'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['original_amount'], '200000.00')
+
+    def test_delete_commitment(self):
+        c = Commitment.objects.create(
+            entity=self.entity, asset=self.asset,
+            commitment_date='2024-01-01', original_amount=Decimal('100000'),
+        )
+        response = self.client.delete(f'/api/commitments/{c.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class CapitalCallAPITest(TestCase):
+    """Tests for CapitalCall CRUD endpoints."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.entity = Entity.objects.create(name='Entity A', entity_type='LLC')
+        self.asset = Asset.objects.create(name='Fund A', asset_type='private_equity')
+        self.commitment = Commitment.objects.create(
+            entity=self.entity, asset=self.asset,
+            commitment_date='2024-01-01', original_amount=Decimal('1000000'),
+        )
+
+    def test_create_capital_call(self):
+        data = {
+            'commitment': self.commitment.id,
+            'call_date': '2024-06-15',
+            'amount': '250000.00',
+        }
+        response = self.client.post('/api/capital-calls/', data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['amount'], '250000.00')
+        self.assertIn('Entity A', response.data['commitment_display'])
+
+    def test_list_capital_calls_filter_commitment(self):
+        CapitalCall.objects.create(
+            commitment=self.commitment, call_date='2024-06-15', amount=Decimal('200000'),
+        )
+        response = self.client.get(f'/api/capital-calls/?commitment={self.commitment.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['results']), 1)
+
+    def test_commitment_computed_fields_after_call(self):
+        """After a capital call, commitment's computed fields update correctly."""
+        CapitalCall.objects.create(
+            commitment=self.commitment, call_date='2024-06-15', amount=Decimal('600000'),
+        )
+        response = self.client.get(f'/api/commitments/{self.commitment.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['paid_in'], '600000.00')
+        self.assertEqual(response.data['pct_called'], '60.00')
+        self.assertEqual(response.data['unfunded'], '400000.00')
+        self.assertEqual(response.data['call_count'], 1)
+
+    def test_full_capital_call(self):
+        """100% called => unfunded = 0."""
+        CapitalCall.objects.create(
+            commitment=self.commitment, call_date='2024-06-15', amount=Decimal('1000000'),
+        )
+        response = self.client.get(f'/api/commitments/{self.commitment.id}/')
+        self.assertEqual(response.data['pct_called'], '100.00')
+        self.assertEqual(response.data['unfunded'], '0.00')
+
+
+class PortfolioSummaryAPITest(TestCase):
+    """Tests for POST /api/portfolio/summary/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.entity = Entity.objects.create(name='Entity One', entity_type='LLC')
+        self.asset = Asset.objects.create(name='PE Fund Alpha', asset_type='private_equity')
+        EntityAssetOwnership.objects.create(
+            entity=self.entity, asset=self.asset, percentage=Decimal('100'),
+            effective_date=datetime.date(2023, 1, 1),
+        )
+        self.commitment = Commitment.objects.create(
+            entity=self.entity, asset=self.asset,
+            commitment_date='2023-01-01', original_amount=Decimal('1000000'),
+        )
+        CapitalCall.objects.create(
+            commitment=self.commitment, call_date='2023-06-15', amount=Decimal('1000000'),
+        )
+        # Distribution
+        dist = Distribution.objects.create(
+            asset=self.asset,
+            distribution_date=datetime.date(2024, 6, 15),
+            total_amount=Decimal('2000000'),
+        )
+        DistributionAllocation.objects.create(
+            distribution=dist, entity=self.entity, amount=Decimal('2000000'),
+            percentage=Decimal('100.0000'),
+        )
+
+    def test_summary_returns_entity_data(self):
+        response = self.client.post('/api/portfolio/summary/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data
+        self.assertIn('entities', data)
+        self.assertIn('all_entities', data)
+        self.assertGreaterEqual(len(data['entities']), 1)
+
+        ent = data['entities'][0]
+        self.assertEqual(ent['entity_name'], 'Entity One')
+        self.assertEqual(ent['original_commitment'], '1000000.00')
+        self.assertEqual(ent['paid_in'], '1000000.00')
+        self.assertEqual(ent['distributions'], '2000000.00')
+        # DPI = 2M / 1M = 2.00
+        self.assertEqual(ent['dpi'], '2.00')
+
+    def test_summary_with_entity_filter(self):
+        response = self.client.post(
+            '/api/portfolio/summary/',
+            {'entity_ids': str(self.entity.id)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['entities']), 1)
+
+    def test_summary_empty_entity(self):
+        """Entity with no commitments shows zero values and null ratios."""
+        empty_entity = Entity.objects.create(name='Empty Entity', entity_type='trust')
+        response = self.client.post(
+            '/api/portfolio/summary/',
+            {'entity_ids': str(empty_entity.id)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ent = response.data['entities'][0]
+        self.assertEqual(ent['original_commitment'], '0.00')
+        self.assertIsNone(ent['pct_called'])  # div by zero
+        self.assertIsNone(ent['dpi'])
+        self.assertIsNone(ent['rvpi'])
+        self.assertIsNone(ent['tvpi'])
+        self.assertIsNone(ent['irr'])
+
+
+class PortfolioSummaryExportTest(TestCase):
+    """Test POST /api/portfolio/summary/export/."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_export_returns_xlsx(self):
+        response = self.client.post('/api/portfolio/summary/export/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        self.assertIn('.xlsx', response['Content-Disposition'])
+
+
+class AssetClassSummaryAPITest(TestCase):
+    """Tests for POST /api/portfolio/asset-class-summary/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.asset_re = Asset.objects.create(name='Beach House', asset_type='real_estate')
+        FMVSnapshot.objects.create(
+            asset=self.asset_re,
+            snapshot_date=datetime.date.today(),
+            value=Decimal('500000'),
+        )
+        self.asset_cash = Asset.objects.create(name='Savings', asset_type='cash')
+        FMVSnapshot.objects.create(
+            asset=self.asset_cash,
+            snapshot_date=datetime.date.today(),
+            value=Decimal('200000'),
+        )
+
+    def test_summary_returns_classes(self):
+        response = self.client.post('/api/portfolio/asset-class-summary/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data
+        self.assertIn('by_class', data)
+        self.assertIn('total_value', data)
+        self.assertEqual(data['item_count'], 2)
+
+    def test_summary_type_filter(self):
+        response = self.client.post(
+            '/api/portfolio/asset-class-summary/',
+            {'type_filters': ['cash']},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Should only have cash class
+        self.assertEqual(len(response.data['by_class']), 1)
+        self.assertEqual(response.data['by_class'][0]['asset_type'], 'cash')
+
+    def test_empty_portfolio(self):
+        Asset.objects.all().delete()
+        FMVSnapshot.objects.all().delete()
+        response = self.client.post('/api/portfolio/asset-class-summary/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['total_value'], '0.00')
+        self.assertEqual(response.data['by_class'], [])
+
+
+class AssetClassSummaryExportTest(TestCase):
+    """Test POST /api/portfolio/asset-class-summary/export/."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_export_returns_xlsx(self):
+        response = self.client.post('/api/portfolio/asset-class-summary/export/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+
+
+class InvestmentPerformanceAPITest(TestCase):
+    """Tests for POST /api/portfolio/performance/."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.entity = Entity.objects.create(name='Perf Entity', entity_type='LLC')
+        self.asset = Asset.objects.create(name='PE Fund Beta', asset_type='private_equity')
+        EntityAssetOwnership.objects.create(
+            entity=self.entity, asset=self.asset, percentage=Decimal('100'),
+            effective_date=datetime.date(2023, 1, 1),
+        )
+        self.commitment = Commitment.objects.create(
+            entity=self.entity, asset=self.asset,
+            commitment_date='2023-01-01', original_amount=Decimal('1000000'),
+        )
+        CapitalCall.objects.create(
+            commitment=self.commitment, call_date='2023-03-01', amount=Decimal('1000000'),
+        )
+        dist = Distribution.objects.create(
+            asset=self.asset,
+            distribution_date=datetime.date(2024, 3, 1),
+            total_amount=Decimal('2000000'),
+        )
+        DistributionAllocation.objects.create(
+            distribution=dist, entity=self.entity, amount=Decimal('2000000'),
+            percentage=Decimal('100.0000'),
+        )
+
+    def test_performance_returns_investments(self):
+        response = self.client.post('/api/portfolio/performance/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data
+        self.assertIn('investments', data)
+        self.assertIn('entity_totals', data)
+        self.assertGreaterEqual(len(data['investments']), 1)
+        inv = data['investments'][0]
+        self.assertEqual(inv['asset_name'], 'PE Fund Beta')
+        self.assertEqual(inv['paid_in'], '1000000.00')
+        self.assertEqual(inv['distributions'], '2000000.00')
+        self.assertEqual(inv['dpi'], '2.00')
+
+    def test_performance_entity_filter(self):
+        response = self.client.post(
+            '/api/portfolio/performance/',
+            {'entity_ids': str(self.entity.id)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['investments']), 1)
+
+    def test_performance_no_data(self):
+        """No commitments → empty investments list."""
+        empty_entity = Entity.objects.create(name='Empty', entity_type='trust')
+        response = self.client.post(
+            '/api/portfolio/performance/',
+            {'entity_ids': str(empty_entity.id)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['investments']), 0)
+
+
+class InvestmentPerformanceExportTest(TestCase):
+    """Test POST /api/portfolio/performance/export/."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_export_returns_xlsx(self):
+        response = self.client.post('/api/portfolio/performance/export/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+
+
+class PortfolioEdgeCaseTest(TestCase):
+    """Edge case tests for portfolio metrics."""
+
+    def test_zero_commitment_pct_called_null(self):
+        """When original_commitment is $0, pct_called should be None (displayed as '—')."""
+        entity = Entity.objects.create(name='Zero Commitment', entity_type='LLC')
+        asset = Asset.objects.create(name='Fund Z', asset_type='private_equity')
+        EntityAssetOwnership.objects.create(
+            entity=entity, asset=asset, percentage=Decimal('100'),
+            effective_date=datetime.date(2024, 1, 1),
+        )
+        Commitment.objects.create(
+            entity=entity, asset=asset,
+            commitment_date='2024-01-01', original_amount=Decimal('0'),
+        )
+        report = generate_portfolio_summary(entity_ids=[entity.id])
+        ent = report['entities'][0]
+        self.assertEqual(ent['original_commitment'], '0.00')
+        self.assertIsNone(ent['pct_called'])
+        self.assertEqual(ent['unfunded_commitment'], '0.00')
+
+    def test_dpi_greater_than_one(self):
+        """Distributions exceeding paid-in → DPI > 1.0 is valid."""
+        entity = Entity.objects.create(name='High DPI', entity_type='LLC')
+        asset = Asset.objects.create(name='Great Fund', asset_type='private_equity')
+        EntityAssetOwnership.objects.create(
+            entity=entity, asset=asset, percentage=Decimal('100'),
+            effective_date=datetime.date(2023, 1, 1),
+        )
+        commitment = Commitment.objects.create(
+            entity=entity, asset=asset,
+            commitment_date='2023-01-01', original_amount=Decimal('100000'),
+        )
+        CapitalCall.objects.create(
+            commitment=commitment, call_date='2023-03-01', amount=Decimal('100000'),
+        )
+        dist = Distribution.objects.create(
+            asset=asset,
+            distribution_date=datetime.date(2024, 6, 1),
+            total_amount=Decimal('500000'),
+        )
+        DistributionAllocation.objects.create(
+            distribution=dist, entity=entity, amount=Decimal('500000'),
+            percentage=Decimal('100.0000'),
+        )
+        report = generate_portfolio_summary(entity_ids=[entity.id])
+        ent = report['entities'][0]
+        self.assertEqual(ent['dpi'], '5.00')
+        self.assertEqual(ent['tvpi'], '5.00')
+
+    def test_zero_paid_in_null_ratios(self):
+        """With zero paid-in, DPI/RVPI/TVPI should be None."""
+        entity = Entity.objects.create(name='No Calls', entity_type='LLC')
+        asset = Asset.objects.create(name='Future Fund', asset_type='private_equity')
+        EntityAssetOwnership.objects.create(
+            entity=entity, asset=asset, percentage=Decimal('100'),
+            effective_date=datetime.date(2024, 1, 1),
+        )
+        Commitment.objects.create(
+            entity=entity, asset=asset,
+            commitment_date='2024-01-01', original_amount=Decimal('500000'),
+        )
+        # No capital calls
+        report = generate_portfolio_summary(entity_ids=[entity.id])
+        ent = report['entities'][0]
+        self.assertEqual(ent['paid_in'], '0.00')
+        self.assertIsNone(ent['dpi'])
+        self.assertIsNone(ent['rvpi'])
+        self.assertIsNone(ent['tvpi'])

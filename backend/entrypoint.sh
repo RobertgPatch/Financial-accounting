@@ -87,8 +87,23 @@ done
 echo "Database is ready."
 
 # -----------------------------------------------------------------------
-# 5. Migrate & serve
+# 5. Migrate & seed (if empty) & serve
 # -----------------------------------------------------------------------
 python manage.py migrate --noinput
+
+# Seed demo data if the database has no entities (first deploy / fresh DB)
+python -c "
+import django, os
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'financial_accounting.settings')
+django.setup()
+from api.models import Entity
+if Entity.objects.count() == 0:
+    print('DATABASE_EMPTY: seeding demo data...')
+    from django.core.management import call_command
+    call_command('seed_data')
+    print('Seed complete.')
+else:
+    print(f'Database already has {Entity.objects.count()} entities — skipping seed.')
+"
 
 exec gunicorn financial_accounting.wsgi:application --bind "0.0.0.0:${PORT:-8000}"

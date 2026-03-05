@@ -1,8 +1,10 @@
 from rest_framework import serializers
+from decimal import Decimal
+from django.db.models import Sum
 from .models import (
     Entity, Asset, EntityAssetOwnership, Distribution,
     DistributionAllocation, Budget, BudgetLineItem,
-    AssetTag, FMVSnapshot,
+    AssetTag, FMVSnapshot, Commitment, CapitalCall,
 )
 
 
@@ -183,3 +185,58 @@ class BudgetWriteSerializer(serializers.ModelSerializer):
             for item_data in line_items_data:
                 BudgetLineItem.objects.create(budget=instance, **item_data)
         return instance
+
+
+class CommitmentSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source='entity.name', read_only=True)
+    asset_name = serializers.CharField(source='asset.name', read_only=True)
+    paid_in = serializers.SerializerMethodField()
+    pct_called = serializers.SerializerMethodField()
+    unfunded = serializers.SerializerMethodField()
+    call_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Commitment
+        fields = [
+            'id', 'entity', 'entity_name', 'asset', 'asset_name',
+            'commitment_date', 'original_amount', 'notes',
+            'paid_in', 'pct_called', 'unfunded', 'call_count',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def _get_paid_in(self, obj):
+        total = obj.capital_calls.aggregate(total=Sum('amount'))['total']
+        return total or Decimal('0.00')
+
+    def get_paid_in(self, obj):
+        return str(self._get_paid_in(obj))
+
+    def get_pct_called(self, obj):
+        if obj.original_amount == 0:
+            return None
+        paid = self._get_paid_in(obj)
+        pct = (paid / obj.original_amount * 100).quantize(Decimal('0.01'))
+        return str(pct)
+
+    def get_unfunded(self, obj):
+        paid = self._get_paid_in(obj)
+        return str(obj.original_amount - paid)
+
+    def get_call_count(self, obj):
+        return obj.capital_calls.count()
+
+
+class CapitalCallSerializer(serializers.ModelSerializer):
+    commitment_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CapitalCall
+        fields = [
+            'id', 'commitment', 'commitment_display',
+            'call_date', 'amount', 'notes', 'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def get_commitment_display(self, obj):
+        return f"{obj.commitment.entity.name} → {obj.commitment.asset.name}"
