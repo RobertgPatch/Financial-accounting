@@ -5,6 +5,7 @@ from .models import (
     Entity, Asset, EntityAssetOwnership, Distribution,
     DistributionAllocation, Budget, BudgetLineItem,
     AssetTag, FMVSnapshot, Commitment, CapitalCall,
+    K1Document, K1PartnershipInfo, K1PartnerInfo, K1IncomeItem, K1CapitalAccount,
 )
 
 
@@ -240,3 +241,85 @@ class CapitalCallSerializer(serializers.ModelSerializer):
 
     def get_commitment_display(self, obj):
         return f"{obj.commitment.entity.name} → {obj.commitment.asset.name}"
+
+
+# ---------------------------------------------------------------------------
+# K-1 PDF Ingestion Serializers
+# ---------------------------------------------------------------------------
+
+class K1PartnershipInfoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = K1PartnershipInfo
+        exclude = ['id', 'document']
+
+
+class K1PartnerInfoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = K1PartnerInfo
+        exclude = ['id', 'document']
+
+
+class K1IncomeItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = K1IncomeItem
+        fields = ['id', 'line_number', 'code', 'description', 'amount', 'raw_text', 'is_supplemental']
+        read_only_fields = ['id']
+
+
+class K1CapitalAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = K1CapitalAccount
+        exclude = ['id', 'document']
+
+
+class K1DocumentSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views."""
+    partnership_name = serializers.SerializerMethodField()
+    total_distributions = serializers.SerializerMethodField()
+    net_income = serializers.SerializerMethodField()
+    entity_name = serializers.CharField(source='entity.name', read_only=True, default=None)
+    asset_name = serializers.CharField(source='asset.name', read_only=True, default=None)
+
+    class Meta:
+        model = K1Document
+        fields = [
+            'id', 'tax_year', 'status', 'asset_type_classification',
+            'is_final', 'is_amended', 'original_filename',
+            'uploaded_at', 'confirmed_at', 'entity', 'entity_name',
+            'asset', 'asset_name', 'partnership_name',
+            'total_distributions', 'net_income',
+        ]
+
+    def get_partnership_name(self, obj):
+        info = getattr(obj, 'partnership_info', None)
+        return info.name if info else None
+
+    def get_total_distributions(self, obj):
+        items = obj.income_items.filter(line_number='19', code='A')
+        total = items.aggregate(total=Sum('amount'))['total']
+        return str(total) if total else None
+
+    def get_net_income(self, obj):
+        account = getattr(obj, 'capital_account', None)
+        return str(account.net_income) if account and account.net_income is not None else None
+
+
+class K1DocumentDetailSerializer(serializers.ModelSerializer):
+    """Full nested serializer for detail/upload/update views."""
+    partnership_info = K1PartnershipInfoSerializer(read_only=True)
+    partner_info = K1PartnerInfoSerializer(read_only=True)
+    income_items = K1IncomeItemSerializer(many=True, read_only=True)
+    capital_account = K1CapitalAccountSerializer(read_only=True)
+    entity_name = serializers.CharField(source='entity.name', read_only=True, default=None)
+    asset_name = serializers.CharField(source='asset.name', read_only=True, default=None)
+
+    class Meta:
+        model = K1Document
+        fields = [
+            'id', 'tax_year', 'status', 'asset_type_classification',
+            'is_final', 'is_amended', 'original_filename', 'document',
+            'extraction_method', 'uploaded_at', 'confirmed_at',
+            'entity', 'entity_name', 'asset', 'asset_name', 'notes',
+            'partnership_info', 'partner_info', 'income_items', 'capital_account',
+        ]
+        read_only_fields = ['id', 'uploaded_at', 'document', 'original_filename', 'extraction_method']

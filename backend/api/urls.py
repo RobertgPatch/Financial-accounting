@@ -14,6 +14,7 @@ router.register(r'fmv-snapshots', views.FMVSnapshotViewSet, basename='fmvsnapsho
 router.register(r'tags', views.AssetTagViewSet, basename='assettag')
 router.register(r'commitments', views.CommitmentViewSet, basename='commitment')
 router.register(r'capital-calls', views.CapitalCallViewSet, basename='capitalcall')
+router.register(r'k1-documents', views.K1DocumentViewSet, basename='k1document')
 
 urlpatterns = [
     path('', include(router.urls)),

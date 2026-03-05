@@ -16,16 +16,34 @@ PLAID_TYPE_MAP = {
 }
 
 ASSET_TYPE_LABELS = {
-    'cash': 'Cash & Equivalents',
     'real_estate': 'Real Estate',
-    'public_equity': 'Public Equity',
+    'venture_capital': 'Venture Capital',
     'private_equity': 'Private Equity',
-    'fixed_income': 'Fixed Income',
     'hedge_fund': 'Hedge Fund',
+    'credit': 'Credit',
+    'co_investment': 'Co-Investment',
+    'infrastructure': 'Infrastructure',
+    'natural_resources': 'Natural Resources',
+    'public_equity': 'Public Equity',
+    'fixed_income': 'Fixed Income',
+    'cash': 'Cash & Equivalents',
     'crypto': 'Cryptocurrency',
     'collectible': 'Collectible',
     'other': 'Other',
 }
+
+# Fixed display order for Asset Class Summary (matches spreadsheet)
+ASSET_CLASS_ORDER = [
+    'real_estate',
+    'venture_capital',
+    'private_equity',
+    'hedge_fund',
+    'credit',
+    'co_investment',
+    'infrastructure',
+    'natural_resources',
+    'other',
+]
 
 
 def _collect_valued_items(entity_ids=None, type_filters=None):
@@ -530,15 +548,20 @@ def generate_asset_class_summary(entity_ids=None, type_filters=None, as_of_date=
             asset_value = latest.value if latest else Decimal('0.00')
         cd['residual'] += asset_value * pct / Decimal('100')
 
-    # Build rows
+    # Build rows — show ALL asset classes in fixed order (even with zeros)
     rows = []
     total_original = Decimal('0.00')
     total_paid_in = Decimal('0.00')
     total_distributions = Decimal('0.00')
     total_residual = Decimal('0.00')
 
-    for atype in sorted(class_data.keys(), key=lambda t: -class_data[t]['original_commitment']):
-        cd = class_data[atype]
+    for atype in ASSET_CLASS_ORDER:
+        cd = class_data.get(atype, {
+            'original_commitment': Decimal('0.00'),
+            'paid_in': Decimal('0.00'),
+            'distributions': Decimal('0.00'),
+            'residual': Decimal('0.00'),
+        })
         oc = cd['original_commitment']
         pi = cd['paid_in']
         dist = cd['distributions']
@@ -549,7 +572,7 @@ def generate_asset_class_summary(entity_ids=None, type_filters=None, as_of_date=
             unfunded = oc - pi
         else:
             pct_called = None
-            unfunded = Decimal('0.00')
+            unfunded = None
 
         if pi > 0:
             dpi = (dist / pi).quantize(Decimal('0.01'))
@@ -560,14 +583,14 @@ def generate_asset_class_summary(entity_ids=None, type_filters=None, as_of_date=
             rvpi = None
             tvpi = None
 
-        irr = _compute_asset_class_xirr(atype, entity_ids, as_of_date, start_date=start_date, end_date=end_date)
+        irr = _compute_asset_class_xirr(atype, entity_ids, as_of_date, start_date=start_date, end_date=end_date) if atype in class_data else None
 
         rows.append({
             'asset_class': ASSET_TYPE_LABELS.get(atype, atype),
             'asset_type': atype,
             'original_commitment': str(oc.quantize(Decimal('0.01'))),
             'pct_called': str(pct_called) if pct_called is not None else None,
-            'unfunded_commitment': str(unfunded.quantize(Decimal('0.01'))),
+            'unfunded_commitment': str(unfunded.quantize(Decimal('0.01'))) if unfunded is not None else None,
             'paid_in': str(pi.quantize(Decimal('0.01'))),
             'distributions': str(dist.quantize(Decimal('0.01'))),
             'residual': str(res.quantize(Decimal('0.01'))),

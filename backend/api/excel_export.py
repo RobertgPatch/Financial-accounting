@@ -762,79 +762,117 @@ def export_portfolio_summary(report_data):
 
 
 def export_asset_class_summary(report_data):
-    """Export Asset Class Summary to an Excel workbook."""
+    """Export Asset Class Summary to an Excel workbook matching the spreadsheet format."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Asset Class Summary'
 
     # Title
-    ws.merge_cells('A1:D1')
+    ws.merge_cells('A1:K1')
     title_cell = ws['A1']
-    title_cell.value = f"Asset Class Summary — Total: ${_fmt_money(report_data.get('total_value')):,.2f}"
+    title_cell.value = f"Asset Class Summary — Rollups by Asset Class (as of {report_data.get('as_of_date', '')})"
     title_cell.font = TITLE_FONT
     title_cell.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 30
 
-    # By-class headers
-    headers = ['Asset Class', 'Total Value', '% of Portfolio', 'Items']
-    _apply_header_row(ws, 2, headers)
+    # Headers matching spreadsheet
+    headers = [
+        'Asset Class', 'Original Commitment', '% Called', 'Unfunded Commitment',
+        'Paid-In (ABS)', 'Distributions', 'Residual Used',
+        'DPI', 'RVPI', 'TVPI', 'IRR (XIRR)',
+    ]
+    _apply_header_row(ws, 3, headers)
 
-    row = 3
-    for cls in report_data.get('by_class', []):
-        fill = ALT_ROW_FILL if (row % 2 == 1) else WHITE_FILL
+    def _dash_or_money(val):
+        """Return formatted money or ' - ' for zero/None."""
+        v = _fmt_money(val)
+        return ' - ' if v == 0 or v is None else v
 
-        name_cell = ws.cell(row=row, column=1, value=cls.get('label', ''))
-        name_cell.font = DATA_FONT
-        name_cell.fill = fill
-        name_cell.border = THIN_BORDER
+    def _dash_or_ratio(val):
+        if val is None:
+            return ' - '
+        v = float(val)
+        return ' - ' if v == 0 else v
 
-        val_cell = ws.cell(row=row, column=2, value=_fmt_money(cls.get('total_value')))
-        val_cell.font = DATA_FONT
-        val_cell.fill = fill
-        val_cell.border = THIN_BORDER
-        val_cell.number_format = MONEY_FMT
-        val_cell.alignment = Alignment(horizontal='right')
+    def _dash_or_pct(val):
+        if val is None:
+            return ''
+        v = float(val)
+        return f'{v:.0f}%' if v > 0 else ''
 
-        pct_cell = ws.cell(row=row, column=3, value=_fmt_pct(cls.get('pct_of_portfolio')))
-        pct_cell.font = DATA_FONT
-        pct_cell.fill = fill
-        pct_cell.border = THIN_BORDER
-        pct_cell.alignment = Alignment(horizontal='right')
+    def _dash_or_irr(val):
+        if val is None:
+            return ''
+        return float(val) / 100  # stored as percentage number
 
-        cnt_cell = ws.cell(row=row, column=4, value=cls.get('item_count', 0))
-        cnt_cell.font = DATA_FONT
-        cnt_cell.fill = fill
-        cnt_cell.border = THIN_BORDER
-        cnt_cell.alignment = Alignment(horizontal='right')
+    row = 4
+    for cls in report_data.get('rows', []):
+        fill = ALT_ROW_FILL if (row % 2 == 0) else WHITE_FILL
 
+        values = [
+            cls.get('asset_class', ''),
+            _dash_or_money(cls.get('original_commitment')),
+            _dash_or_pct(cls.get('pct_called')),
+            _dash_or_money(cls.get('unfunded_commitment')),
+            _dash_or_money(cls.get('paid_in')),
+            _dash_or_money(cls.get('distributions')),
+            _dash_or_money(cls.get('residual')),
+            _dash_or_ratio(cls.get('dpi')),
+            _dash_or_ratio(cls.get('rvpi')),
+            _dash_or_ratio(cls.get('tvpi')),
+            _dash_or_irr(cls.get('irr')),
+        ]
+        for col, val in enumerate(values, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col in (2, 4, 5, 6, 7):  # money columns
+                cell.number_format = MONEY_FMT
+                cell.alignment = Alignment(horizontal='right')
+            elif col in (8, 9, 10):  # ratio columns
+                cell.number_format = '0.00'
+                cell.alignment = Alignment(horizontal='right')
+            elif col == 11:  # IRR
+                cell.number_format = '0.00%'
+                cell.alignment = Alignment(horizontal='right')
+            elif col == 3:  # pct called
+                cell.alignment = Alignment(horizontal='right')
         row += 1
 
-    # Blank row then items detail
+    # Blank row then All Asset Classes total
     row += 1
-    if report_data.get('items'):
-        item_headers = ['Name', 'Asset Type', 'Source', 'Value', 'As-Of Date']
-        _apply_header_row(ws, row, item_headers)
-        row += 1
-        for item in report_data['items']:
-            fill = ALT_ROW_FILL if (row % 2 == 1) else WHITE_FILL
-            for col, val in enumerate([
-                item.get('name', ''),
-                item.get('asset_type', ''),
-                item.get('source', ''),
-                _fmt_money(item.get('value')),
-                item.get('snapshot_date', ''),
-            ], 1):
-                cell = ws.cell(row=row, column=col, value=val)
-                cell.font = DATA_FONT
-                cell.fill = fill
-                cell.border = THIN_BORDER
-                if col == 4:
-                    cell.number_format = MONEY_FMT
-                    cell.alignment = Alignment(horizontal='right')
-            row += 1
+    ac = report_data.get('all_classes', {})
+    total_values = [
+        'All Asset Classes',
+        _dash_or_money(ac.get('original_commitment')),
+        _dash_or_pct(ac.get('pct_called')),
+        _dash_or_money(ac.get('unfunded_commitment')),
+        _dash_or_money(ac.get('paid_in')),
+        _dash_or_money(ac.get('distributions')),
+        _dash_or_money(ac.get('residual')),
+        _dash_or_ratio(ac.get('dpi')),
+        _dash_or_ratio(ac.get('rvpi')),
+        _dash_or_ratio(ac.get('tvpi')),
+        _dash_or_irr(ac.get('irr')),
+    ]
+    for col, val in enumerate(total_values, 1):
+        cell = ws.cell(row=row, column=col, value=val)
+        cell.font = Font(name='Calibri', size=11, bold=True)
+        cell.fill = PatternFill(start_color='E2EFDA', end_color='E2EFDA', fill_type='solid')
+        cell.border = THIN_BORDER
+        if col in (2, 4, 5, 6, 7):
+            cell.number_format = MONEY_FMT
+            cell.alignment = Alignment(horizontal='right')
+        elif col in (8, 9, 10):
+            cell.number_format = '0.00'
+            cell.alignment = Alignment(horizontal='right')
+        elif col == 11:
+            cell.number_format = '0.00%'
+            cell.alignment = Alignment(horizontal='right')
 
     _auto_width(ws)
-    ws.freeze_panes = 'A3'
+    ws.freeze_panes = 'A4'
 
     buf = BytesIO()
     wb.save(buf)
@@ -925,6 +963,76 @@ def export_investment_performance(report_data):
                 if col > 1:
                     cell.alignment = Alignment(horizontal='right')
             row += 1
+
+    _auto_width(ws)
+    ws.freeze_panes = 'A3'
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+# ---------------------------------------------------------------------------
+# K-1 Document Export
+# ---------------------------------------------------------------------------
+
+def export_k1_summary(k1_documents):
+    """Export a list of K-1 documents to an Excel workbook.
+
+    Args:
+        k1_documents: QuerySet of K1Document instances with related objects.
+
+    Returns:
+        BytesIO buffer containing the Excel file.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'K-1 Summary'
+
+    # Title
+    ws.merge_cells('A1:H1')
+    title_cell = ws['A1']
+    title_cell.value = 'K-1 Document Summary'
+    title_cell.font = TITLE_FONT
+    title_cell.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 30
+
+    # Headers
+    headers = [
+        'Tax Year', 'Partnership', 'EIN', 'Status',
+        'Entity', 'Net Income', 'Distributions', 'Ending Capital',
+    ]
+    _apply_header_row(ws, 2, headers)
+
+    row = 3
+    for doc in k1_documents:
+        pi = getattr(doc, 'partnership_info', None)
+        cap = getattr(doc, 'capital_account', None)
+        dist_items = doc.income_items.filter(line_number='19')
+        total_dist = sum(i.amount or 0 for i in dist_items)
+
+        values = [
+            doc.tax_year,
+            pi.name if pi else doc.original_filename,
+            pi.ein if pi else '',
+            doc.status.capitalize(),
+            doc.entity.name if doc.entity else '',
+            cap.net_income if cap else None,
+            total_dist if total_dist else None,
+            cap.ending_balance if cap else None,
+        ]
+
+        fill = ALT_ROW_FILL if row % 2 == 1 else WHITE_FILL
+        for col, val in enumerate(values, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col >= 6:
+                cell.number_format = '#,##0.00'
+                cell.alignment = Alignment(horizontal='right')
+        row += 1
 
     _auto_width(ws)
     ws.freeze_panes = 'A3'

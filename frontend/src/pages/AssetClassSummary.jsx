@@ -6,12 +6,18 @@ import { getAssetClassSummary, exportAssetClassSummary } from '../api/reports';
 import { getEntities } from '../api/entities';
 import { toArray } from '../api/utils';
 
-const fmtCurrency = (v) =>
-  v === null || v === undefined
-    ? '—'
-    : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v);
+const fmtCurrency = (v) => {
+  if (v === null || v === undefined) return '—';
+  const num = Number(v);
+  if (num === 0) return '—';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(num);
+};
 
-const fmtRatio = (v) => (v === null || v === undefined ? '—' : Number(v).toFixed(2));
+const fmtRatio = (v) => {
+  if (v === null || v === undefined) return '—';
+  const num = Number(v);
+  return num === 0 ? '—' : num.toFixed(2);
+};
 const fmtPct = (v) => (v === null || v === undefined ? '' : `${Number(v).toFixed(0)}%`);
 const fmtIrr = (v) => (v === null || v === undefined ? '' : `${Number(v).toFixed(2)}%`);
 
@@ -22,7 +28,7 @@ const COLUMNS = [
   { key: 'unfunded_commitment', label: 'Unfunded Commitment', fmt: fmtCurrency },
   { key: 'paid_in', label: 'Paid-In (ABS)', fmt: fmtCurrency },
   { key: 'distributions', label: 'Distributions', fmt: fmtCurrency },
-  { key: 'residual', label: 'Residual Value', fmt: fmtCurrency },
+  { key: 'residual', label: 'Residual Used', fmt: fmtCurrency },
   { key: 'dpi', label: 'DPI', fmt: fmtRatio },
   { key: 'rvpi', label: 'RVPI', fmt: fmtRatio },
   { key: 'tvpi', label: 'TVPI', fmt: fmtRatio },
@@ -153,7 +159,7 @@ export default function AssetClassSummary({ dateRange = {} }) {
                 {report.all_classes && (
                   <tr className="bg-gray-50 border-t-2 border-gray-300 font-semibold">
                     <td className="px-3 py-2.5 whitespace-nowrap text-left text-gray-900">
-                      All Classes
+                      All Asset Classes
                     </td>
                     {COLUMNS.slice(1).map((col) => (
                       <td

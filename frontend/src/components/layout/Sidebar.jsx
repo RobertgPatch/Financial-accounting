@@ -10,6 +10,7 @@ import {
   XMarkIcon,
   CalculatorIcon,
   BuildingLibraryIcon,
+  DocumentTextIcon,
 } from '@heroicons/react/24/outline';
 
 const navItems = [
@@ -20,6 +21,7 @@ const navItems = [
   { path: '/distributions', label: 'Distributions', icon: BanknotesIcon },
   { path: '/budgets', label: 'Budgets', icon: CalculatorIcon },
   { path: '/accounts', label: 'Accounts', icon: BuildingLibraryIcon },
+  { path: '/k1', label: 'K-1 Documents', icon: DocumentTextIcon },
   { path: '/reports', label: 'Reports', icon: ChartBarIcon },
 ];
 
