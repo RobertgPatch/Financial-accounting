@@ -6,6 +6,7 @@ from .models import (
     DistributionAllocation, Budget, BudgetLineItem,
     AssetTag, FMVSnapshot, Commitment, CapitalCall,
     K1Document, K1PartnershipInfo, K1PartnerInfo, K1IncomeItem, K1CapitalAccount,
+    Activity,
 )
 
 
@@ -323,3 +324,40 @@ class K1DocumentDetailSerializer(serializers.ModelSerializer):
             'partnership_info', 'partner_info', 'income_items', 'capital_account',
         ]
         read_only_fields = ['id', 'uploaded_at', 'document', 'original_filename', 'extraction_method']
+
+
+# ---------------------------------------------------------------------------
+# Activity Ledger Serializer
+# ---------------------------------------------------------------------------
+
+class ActivitySerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source='entity.name', read_only=True)
+    asset_name = serializers.CharField(source='asset.name', read_only=True)
+    source_k1_document_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Activity
+        fields = [
+            'id', 'year', 'entity', 'entity_name', 'asset', 'asset_name',
+            'beginning_basis', 'contributions',
+            'interest', 'dividends', 'capital_gains',
+            'remaining_k1_income', 'total_income',
+            'distributions', 'other_adjustments',
+            'ending_tax_basis', 'ending_gl_balance', 'book_to_tax_adj',
+            'ending_k1_capital', 'k1_capital_vs_tax_diff',
+            'excess_distribution', 'negative_basis', 'basis_change',
+            'notes', 'source_k1_document', 'source_k1_document_display',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'created_at', 'updated_at',
+            # Auto-computed by Activity.save()
+            'beginning_basis', 'total_income', 'ending_tax_basis',
+            'book_to_tax_adj', 'k1_capital_vs_tax_diff',
+            'excess_distribution', 'negative_basis', 'basis_change',
+        ]
+
+    def get_source_k1_document_display(self, obj):
+        if obj.source_k1_document:
+            return f"K-1 {obj.source_k1_document.tax_year} – {obj.source_k1_document.original_filename}"
+        return None

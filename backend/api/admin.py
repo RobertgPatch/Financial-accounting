@@ -3,6 +3,7 @@ from .models import (
     Entity, Asset, EntityAssetOwnership, Distribution, DistributionAllocation,
     Commitment, CapitalCall,
     K1Document, K1PartnershipInfo, K1PartnerInfo, K1IncomeItem, K1CapitalAccount,
+    Activity,
 )
 
 admin.site.register(Entity)
@@ -58,3 +59,11 @@ admin.site.register(K1PartnershipInfo)
 admin.site.register(K1PartnerInfo)
 admin.site.register(K1IncomeItem)
 admin.site.register(K1CapitalAccount)
+
+
+@admin.register(Activity)
+class ActivityAdmin(admin.ModelAdmin):
+    list_display = ['year', 'entity', 'asset', 'contributions', 'total_income',
+                    'distributions', 'ending_tax_basis', 'negative_basis']
+    list_filter = ['year', 'entity', 'asset', 'negative_basis']
+    search_fields = ['entity__name', 'asset__name', 'notes']

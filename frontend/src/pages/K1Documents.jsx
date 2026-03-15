@@ -5,8 +5,8 @@ import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import Table from '../components/ui/Table';
 import Modal from '../components/ui/Modal';
-import { PlusIcon, TrashIcon, ArrowDownTrayIcon, EyeIcon } from '@heroicons/react/24/outline';
-import { getK1Documents, deleteK1Document, downloadK1Document } from '../api/k1';
+import { PlusIcon, TrashIcon, ArrowDownTrayIcon, EyeIcon, BoltIcon } from '@heroicons/react/24/outline';
+import { getK1Documents, deleteK1Document, downloadK1Document, simulateK1Upload } from '../api/k1';
 import { getEntities } from '../api/entities';
 import { toArray } from '../api/utils';
 import { format, parseISO } from 'date-fns';
@@ -25,6 +25,13 @@ export default function K1Documents() {
   const [error, setError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Simulate modal state
+  const [showSimulate, setShowSimulate] = useState(false);
+  const [simYear, setSimYear] = useState(currentYear);
+  const [simEntity, setSimEntity] = useState('');
+  const [simulating, setSimulating] = useState(false);
+  const [simResult, setSimResult] = useState(null);
 
   // Filters
   const [filterYear, setFilterYear] = useState('');
@@ -76,6 +83,23 @@ export default function K1Documents() {
       window.URL.revokeObjectURL(url);
     } catch {
       setError('Download failed.');
+    }
+  };
+
+  const handleSimulate = async () => {
+    setSimulating(true);
+    setSimResult(null);
+    setError('');
+    try {
+      const res = await simulateK1Upload(simYear, {
+        entity: simEntity || undefined,
+      });
+      setSimResult(res.data);
+      load(); // refresh the table
+    } catch (err) {
+      setError(err.response?.data?.error || 'Simulation failed.');
+    } finally {
+      setSimulating(false);
     }
   };
 
@@ -144,10 +168,16 @@ export default function K1Documents() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">K-1 Documents</h1>
-        <Button onClick={() => navigate('/k1/upload')}>
-          <PlusIcon className="h-4 w-4 mr-2" />
-          Upload K-1
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => setShowSimulate(true)}>
+            <BoltIcon className="h-4 w-4 mr-2" />
+            Simulate K-1 Upload
+          </Button>
+          <Button onClick={() => navigate('/k1/upload')}>
+            <PlusIcon className="h-4 w-4 mr-2" />
+            Upload K-1
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -239,6 +269,78 @@ export default function K1Documents() {
           </Button>
           <Button variant="danger" onClick={handleDelete} disabled={deleting}>
             {deleting ? 'Deleting...' : 'Delete'}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Simulate K-1 Upload */}
+      <Modal
+        isOpen={showSimulate}
+        onClose={() => { setShowSimulate(false); setSimResult(null); }}
+        title="Simulate K-1 Upload"
+      >
+        <p className="text-sm text-gray-600 mb-4">
+          Generate randomized realistic K-1 data for all entity/asset pairs
+          (or filter by entity). Each simulated K-1 is auto-confirmed and
+          populates Distributions &amp; Activity.
+        </p>
+
+        <div className="space-y-3 mb-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Tax Year</label>
+            <select
+              value={simYear}
+              onChange={(e) => setSimYear(Number(e.target.value))}
+              className="w-full border border-gray-300 rounded-md shadow-sm px-3 py-1.5 text-sm"
+            >
+              {taxYears.map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Entity (optional)</label>
+            <select
+              value={simEntity}
+              onChange={(e) => setSimEntity(e.target.value)}
+              className="w-full border border-gray-300 rounded-md shadow-sm px-3 py-1.5 text-sm"
+            >
+              <option value="">All Entities</option>
+              {entities.map((ent) => (
+                <option key={ent.id} value={ent.id}>{ent.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {simResult && (
+          <div className="rounded-md bg-green-50 p-3 mb-4">
+            <p className="text-sm font-medium text-green-800">{simResult.message}</p>
+            {simResult.created?.length > 0 && (
+              <ul className="mt-2 text-xs text-green-700 space-y-0.5">
+                {simResult.created.map((c, i) => (
+                  <li key={i}>
+                    {c.entity} / {c.asset} — {c.distributions_created} distributions (${c.total_amount})
+                  </li>
+                ))}
+              </ul>
+            )}
+            {simResult.skipped?.length > 0 && (
+              <ul className="mt-2 text-xs text-yellow-700 space-y-0.5">
+                {simResult.skipped.map((s, i) => (
+                  <li key={i}>{s.entity} / {s.asset} — {s.reason}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => { setShowSimulate(false); setSimResult(null); }}>
+            Close
+          </Button>
+          <Button onClick={handleSimulate} disabled={simulating}>
+            {simulating ? 'Simulating...' : 'Run Simulation'}
           </Button>
         </div>
       </Modal>

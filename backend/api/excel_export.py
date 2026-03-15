@@ -1041,3 +1041,86 @@ def export_k1_summary(k1_documents):
     wb.save(buf)
     buf.seek(0)
     return buf
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Activity Report Export
+# ═══════════════════════════════════════════════════════════════════════
+
+def export_activity_report(activities):
+    """Export a list of Activity model instances to an Excel workbook."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Activity'
+
+    # Title
+    ws.merge_cells('A1:V1')
+    title_cell = ws['A1']
+    title_cell.value = 'Activity — All Entities & Partnerships'
+    title_cell.font = TITLE_FONT
+    title_cell.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 30
+
+    # Headers
+    headers = [
+        'Year', 'Entity', 'Partnership',
+        'Beg Basis', 'Contributions',
+        'Interest (5)', 'Dividends (6)', 'Cap Gains (8/9/10)',
+        'Remaining K-1 Income/Ded.', 'Total Income',
+        'Distributions', 'Other Adj (18-c)',
+        'Ending Tax Basis', 'Ending GL Balance Per Books',
+        'Book-to-Tax Adj', 'Ending K-1 Capital Account',
+        'K-1 Capital vs Tax Basis Diff', 'Excess Distribution',
+        'Negative Basis?', 'Δ Ending Basis vs Prior Year',
+        'Notes', 'Source',
+    ]
+    _apply_header_row(ws, 2, headers)
+
+    # Data
+    row = 3
+    money_cols = set(range(4, 19))  # columns D through R (1-indexed)
+    money_cols.add(20)  # T = Δ Ending Basis
+
+    for act in activities:
+        vals = [
+            act.year,
+            act.entity.name if act.entity else '',
+            act.asset.name if act.asset else '',
+            float(act.beginning_basis),
+            float(act.contributions),
+            float(act.interest),
+            float(act.dividends),
+            float(act.capital_gains),
+            float(act.remaining_k1_income),
+            float(act.total_income),
+            float(act.distributions),
+            float(act.other_adjustments),
+            float(act.ending_tax_basis),
+            float(act.ending_gl_balance),
+            float(act.book_to_tax_adj),
+            float(act.ending_k1_capital),
+            float(act.k1_capital_vs_tax_diff),
+            float(act.excess_distribution),
+            'YES' if act.negative_basis else '',
+            float(act.basis_change),
+            act.notes or '',
+            f"K-1 {act.source_k1_document.tax_year}" if act.source_k1_document else 'Manual',
+        ]
+        fill = ALT_ROW_FILL if (row - 3) % 2 == 1 else WHITE_FILL
+        for col, val in enumerate(vals, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = DATA_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
+            if col in money_cols:
+                cell.number_format = '#,##0'
+                cell.alignment = Alignment(horizontal='right')
+        row += 1
+
+    _auto_width(ws)
+    ws.freeze_panes = 'D3'
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf

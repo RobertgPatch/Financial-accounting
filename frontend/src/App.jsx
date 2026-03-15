@@ -15,6 +15,7 @@ import Accounts from './pages/Accounts';
 import K1Upload from './pages/K1Upload';
 import K1Review from './pages/K1Review';
 import K1Documents from './pages/K1Documents';
+import ActivityPage from './pages/ActivityPage';
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="k1" element={<K1Documents />} />
             <Route path="k1/upload" element={<K1Upload />} />
             <Route path="k1/:id/review" element={<K1Review />} />
+            <Route path="activity" element={<ActivityPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

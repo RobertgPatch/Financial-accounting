@@ -34,3 +34,10 @@ export const downloadK1Document = (id) =>
 
 export const populateK1Document = (id) =>
   client.post(`/k1-documents/${id}/populate/`);
+
+export const simulateK1Upload = (year, opts = {}) => {
+  const body = { year };
+  if (opts.entity) body.entity = opts.entity;
+  if (opts.asset) body.asset = opts.asset;
+  return client.post('/k1-documents/simulate/', body);
+};

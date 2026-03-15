@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.utils.text import slugify
 import re
@@ -392,3 +394,140 @@ class K1CapitalAccount(models.Model):
 
     def __str__(self):
         return f"Capital Account: {self.beginning_balance} → {self.ending_balance}"
+
+
+# ---------------------------------------------------------------------------
+# Activity Ledger
+# ---------------------------------------------------------------------------
+
+class Activity(models.Model):
+    """Yearly tax-basis activity record per Entity + Partnership (Asset).
+
+    This is the central ledger that feeds all report views.  Rows are
+    auto-created from confirmed K-1 documents or entered manually.
+    """
+
+    year = models.IntegerField()
+    entity = models.ForeignKey(Entity, on_delete=models.CASCADE, related_name='activities')
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name='activities')
+
+    # Tax basis start
+    beginning_basis = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+
+    # Capital in
+    contributions = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+
+    # Income line items (K-1 references)
+    interest = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                   help_text='K-1 Line 5')
+    dividends = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                    help_text='K-1 Line 6')
+    capital_gains = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                        help_text='K-1 Lines 8/9/10')
+    remaining_k1_income = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                              help_text='Remaining K-1 income/deductions')
+    total_income = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                       help_text='Sum of income components')
+
+    # Outflows
+    distributions = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    other_adjustments = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                            help_text='K-1 Line 18-c')
+
+    # Ending values
+    ending_tax_basis = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    ending_gl_balance = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                            help_text='Ending GL Balance Per Books')
+    book_to_tax_adj = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                          help_text='GL Ending - Tax Basis')
+    ending_k1_capital = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                            help_text='Ending K-1 Capital Account')
+    k1_capital_vs_tax_diff = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                                  help_text='K-1 Capital vs Tax Basis Difference')
+
+    # Flags & derived
+    excess_distribution = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    negative_basis = models.BooleanField(default=False)
+    basis_change = models.DecimalField(max_digits=15, decimal_places=2, default=0,
+                                       help_text='Δ Ending Basis vs Prior Year')
+
+    notes = models.TextField(blank=True, default='')
+
+    # Source tracking
+    source_k1_document = models.ForeignKey(
+        K1Document, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='activity_records',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'activities'
+        unique_together = [('year', 'entity', 'asset')]
+        ordering = ['entity', 'asset', 'year']
+
+    def __str__(self):
+        return f"{self.entity.name} | {self.asset.name} | {self.year}"
+
+    # ------------------------------------------------------------------
+    # Auto-computed fields
+    # ------------------------------------------------------------------
+
+    def compute_derived(self):
+        """Recompute all auto-calculated fields from flow inputs."""
+        Z = Decimal('0')
+        self.total_income = (
+            (self.interest or Z) + (self.dividends or Z)
+            + (self.capital_gains or Z) + (self.remaining_k1_income or Z)
+        )
+        bb = self.beginning_basis or Z
+        self.ending_tax_basis = (
+            bb + (self.contributions or Z) + self.total_income
+            - (self.distributions or Z) + (self.other_adjustments or Z)
+        )
+        self.book_to_tax_adj = (self.ending_gl_balance or Z) - self.ending_tax_basis
+        self.k1_capital_vs_tax_diff = (self.ending_k1_capital or Z) - self.ending_tax_basis
+        self.negative_basis = self.ending_tax_basis < Z
+        self.excess_distribution = max(Z, -self.ending_tax_basis) if self.negative_basis else Z
+        self.basis_change = self.ending_tax_basis - bb
+
+    def save(self, *args, **kwargs):
+        Z = Decimal('0')
+        # Auto-populate beginning_basis from prior year's ending_tax_basis
+        prior_ending = (
+            Activity.objects.filter(
+                year=self.year - 1,
+                entity_id=self.entity_id,
+                asset_id=self.asset_id,
+            )
+            .values_list('ending_tax_basis', flat=True)
+            .first()
+        )
+        self.beginning_basis = prior_ending if prior_ending is not None else Z
+
+        self.compute_derived()
+
+        # Ensure computed fields are persisted when update_fields is set
+        # (e.g. from update_or_create)
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            kwargs['update_fields'] = frozenset(update_fields) | frozenset({
+                'beginning_basis', 'total_income', 'ending_tax_basis',
+                'book_to_tax_adj', 'k1_capital_vs_tax_diff',
+                'excess_distribution', 'negative_basis', 'basis_change',
+            })
+
+        super().save(*args, **kwargs)
+
+        # Cascade: propagate ending_tax_basis to the next year's beginning_basis
+        try:
+            nxt = Activity.objects.get(
+                year=self.year + 1,
+                entity_id=self.entity_id,
+                asset_id=self.asset_id,
+            )
+            if nxt.beginning_basis != self.ending_tax_basis:
+                nxt.save()  # recursive — bounded by the year range
+        except Activity.DoesNotExist:
+            pass

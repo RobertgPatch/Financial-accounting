@@ -17,6 +17,7 @@ from .models import (
     DistributionAllocation, Budget, BudgetLineItem,
     AssetTag, FMVSnapshot, Commitment, CapitalCall,
     K1Document, K1PartnershipInfo, K1PartnerInfo, K1IncomeItem, K1CapitalAccount,
+    Activity,
 )
 from .serializers import (
     EntitySerializer, AssetSerializer, EntityAssetOwnershipSerializer,
@@ -27,6 +28,7 @@ from .serializers import (
     K1DocumentSerializer, K1DocumentDetailSerializer,
     K1PartnershipInfoSerializer, K1PartnerInfoSerializer,
     K1IncomeItemSerializer, K1CapitalAccountSerializer,
+    ActivitySerializer,
 )
 from .reports import (
     generate_distribution_report, generate_dashboard_summary,
@@ -466,6 +468,77 @@ class CapitalCallViewSet(viewsets.ModelViewSet):
 
 
 # ---------------------------------------------------------------------------
+# Activity Ledger CRUD ViewSet
+# ---------------------------------------------------------------------------
+
+class ActivityViewSet(viewsets.ModelViewSet):
+    """CRUD for Activity (tax-basis ledger) records.
+
+    Supports query-string filters:
+        ?entity=<id>   — filter by entity
+        ?asset=<id>    — filter by asset (partnership)
+        ?year=<int>    — filter by year
+
+    When a specific year is requested the view auto-scaffolds Activity rows
+    for every EntityAssetOwnership pair that does not yet have one for that
+    year.  Beginning Basis, Ending Tax Basis, Δ vs prior year and other
+    derived fields are auto-computed by Activity.save().
+    """
+    serializer_class = ActivitySerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        qs = Activity.objects.select_related('entity', 'asset', 'source_k1_document').all()
+        entity_id = self.request.query_params.get('entity')
+        asset_id = self.request.query_params.get('asset')
+        year = self.request.query_params.get('year')
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+        if year:
+            qs = qs.filter(year=int(year))
+        return qs
+
+    # ------------------------------------------------------------------
+    # Auto-scaffold
+    # ------------------------------------------------------------------
+
+    def list(self, request, *args, **kwargs):
+        year = request.query_params.get('year')
+        if year:
+            self._scaffold(int(year))
+        return super().list(request, *args, **kwargs)
+
+    @staticmethod
+    def _scaffold(year):
+        """Create Activity rows for every EntityAssetOwnership pair missing for *year*.
+
+        Activity.save() auto-populates beginning_basis from the prior year's
+        ending_tax_basis and computes all derived fields.
+        """
+        pairs = set(
+            EntityAssetOwnership.objects.values_list('entity_id', 'asset_id').distinct()
+        )
+        existing = set(
+            Activity.objects.filter(year=year).values_list('entity_id', 'asset_id')
+        )
+        for entity_id, asset_id in pairs - existing:
+            Activity.objects.create(year=year, entity_id=entity_id, asset_id=asset_id)
+
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception as exc:
+            if 'unique' in str(exc).lower():
+                return Response(
+                    {'error': 'An activity record already exists for this entity/asset/year combination.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            raise
+
+
+# ---------------------------------------------------------------------------
 # Portfolio Tracker API Views
 # ---------------------------------------------------------------------------
 
@@ -628,6 +701,33 @@ def investment_performance_export(request):
     excel_buf = _export(report)
     today = date.today().isoformat()
     filename = f"investment_performance_{today}.xlsx"
+    response = HttpResponse(
+        excel_buf.read(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(['POST'])
+def activity_export(request):
+    """POST /api/activity/export/ — Export activity ledger to Excel."""
+    from .excel_export import export_activity_report
+    entity_id = request.data.get('entity')
+    asset_id = request.data.get('asset')
+    year = request.data.get('year')
+
+    qs = Activity.objects.select_related('entity', 'asset').order_by('entity__name', 'asset__name', 'year')
+    if entity_id:
+        qs = qs.filter(entity_id=entity_id)
+    if asset_id:
+        qs = qs.filter(asset_id=asset_id)
+    if year:
+        qs = qs.filter(year=int(year))
+
+    excel_buf = export_activity_report(list(qs))
+    today = date.today().isoformat()
+    filename = f"activity_report_{today}.xlsx"
     response = HttpResponse(
         excel_buf.read(),
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -939,4 +1039,54 @@ class K1DocumentViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    # ---- Simulate K-1 upload (dev / demo) ----
+
+    @action(detail=False, methods=['post'], url_path='simulate')
+    def simulate(self, request):
+        """Generate realistic mock K-1 data for entity/asset pairs.
+
+        Body params:
+            year (int, required)  — Tax year to simulate.
+            entity (int, optional) — Limit to one entity.
+            asset  (int, optional) — Limit to one asset.
+
+        For every qualifying ownership pair that does NOT already have a
+        populated K-1 for that year, creates K1Document + child records,
+        auto-confirms, and runs the populate pipeline so Distribution +
+        Activity rows appear immediately.
+        """
+        from .k1_simulator import simulate_k1_batch
+
+        year = request.data.get('year')
+        if not year:
+            return Response(
+                {'error': 'year is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            year = int(year)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'year must be an integer.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        entity_id = request.data.get('entity') or None
+        asset_id = request.data.get('asset') or None
+
+        try:
+            result = simulate_k1_batch(year, entity_id=entity_id, asset_id=asset_id)
+            n = len(result['created'])
+            s = len(result['skipped'])
+            return Response({
+                'message': f"Simulated {n} K-1(s) for {year}. Skipped {s}.",
+                **result,
+            })
+        except Exception as exc:
+            logger.exception('K-1 simulation failed')
+            return Response(
+                {'error': f'Simulation failed: {str(exc)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )

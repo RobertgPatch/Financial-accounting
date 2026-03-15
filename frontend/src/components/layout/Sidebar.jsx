@@ -11,6 +11,7 @@ import {
   CalculatorIcon,
   BuildingLibraryIcon,
   DocumentTextIcon,
+  ClipboardDocumentListIcon,
 } from '@heroicons/react/24/outline';
 
 const navItems = [
@@ -22,6 +23,7 @@ const navItems = [
   { path: '/budgets', label: 'Budgets', icon: CalculatorIcon },
   { path: '/accounts', label: 'Accounts', icon: BuildingLibraryIcon },
   { path: '/k1', label: 'K-1 Documents', icon: DocumentTextIcon },
+  { path: '/activity', label: 'Activity', icon: ClipboardDocumentListIcon },
   { path: '/reports', label: 'Reports', icon: ChartBarIcon },
 ];
 
@@ -31,7 +33,7 @@ export default function Sidebar({ isOpen, onClose }) {
       className={`
         fixed inset-y-0 left-0 z-40 w-64 bg-[#0F172A] flex flex-col
         transform transition-transform duration-200 ease-in-out
-        lg:relative lg:translate-x-0
+        lg:translate-x-0
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
       `}
     >

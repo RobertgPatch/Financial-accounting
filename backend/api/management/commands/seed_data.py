@@ -1,27 +1,21 @@
 """
-Seed the database with educational test data for the Portfolio Tracker.
+Seed the database with test data that matches the K-1 → Activity data flow.
 
-Clears ALL existing data, then creates 4 entities with varied investment
-scenarios that exercise every column in the Portfolio Summary:
+The K-1 is the source of truth — when it's ingested and confirmed, the user
+assigns entity + asset (partnership) + asset type + optional ownership %.
+The populate step then creates Distribution / Activity records.
 
-  Entity                      | Scenario
-  ----------------------------|--------------------------------------------------
-  Acme Capital Partners       | Fully called, fully realized (DPI=2.0, RVPI=0)
-  Blue Harbor Family Trust    | Partially called, mixed (DPI~0.5, RVPI~1.2)
-  Cypress Growth Holdings     | Early-stage, unrealized only (DPI=0, RVPI~1.5)
-  Drake Equity Group          | Mature, mostly realized (DPI~1.8, RVPI~0.1)
+This seeder creates:
+  1.  Entities (investors / trusts)
+  2.  Assets (partnerships / funds)  — each has an asset_type
+  3.  Ownerships (entity ↔ asset with %)
+  4.  Commitments + Capital Calls
+  5.  FMV Snapshots
 
-Metric definitions:
-  - Original Commitment: Total $ pledged to a fund
-  - % Called: Paid-In / Original Commitment
-  - Unfunded Commitment: Original Commitment - Paid-In
-  - Paid-In (ABS): Capital calls actually drawn
-  - Distributions: Cash returned to the investor
-  - Residual Value: Current market value of remaining holdings
-  - DPI (Distributions to Paid-In): Distributions / Paid-In  -- "cash-on-cash"
-  - RVPI (Residual Value to Paid-In): Residual / Paid-In  -- unrealized value
-  - TVPI (Total Value to Paid-In): (Distributions + Residual) / Paid-In  -- total multiple
-  - IRR (XIRR): Time-weighted annualized return considering cash flow timing
+It does NOT create K-1 documents, Distributions, or Activity rows.
+Those are populated via the "Simulate K-1 Upload" button in the UI,
+which generates realistic mock K-1 data and runs the confirm → populate
+pipeline.
 """
 
 from django.core.management.base import BaseCommand
@@ -31,7 +25,7 @@ from datetime import date
 
 
 class Command(BaseCommand):
-    help = 'Clear all data and seed with educational portfolio test data'
+    help = 'Clear all data and seed entities, assets, ownerships, commitments, and FMV snapshots'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -42,13 +36,24 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **kwargs):
         from api.models import (
-            Entity, Asset, EntityAssetOwnership, Distribution,
-            DistributionAllocation, AssetTag, FMVSnapshot,
-            Budget, BudgetLineItem, Commitment, CapitalCall,
+            Entity, Asset, EntityAssetOwnership,
+            Distribution, DistributionAllocation,
+            AssetTag, FMVSnapshot,
+            Budget, BudgetLineItem,
+            Commitment, CapitalCall,
+            K1Document, K1PartnershipInfo, K1PartnerInfo,
+            K1IncomeItem, K1CapitalAccount,
+            Activity,
         )
 
         if not kwargs.get('no_clear'):
             self.stdout.write('Clearing all existing data...')
+            Activity.objects.all().delete()
+            K1CapitalAccount.objects.all().delete()
+            K1IncomeItem.objects.all().delete()
+            K1PartnerInfo.objects.all().delete()
+            K1PartnershipInfo.objects.all().delete()
+            K1Document.objects.all().delete()
             CapitalCall.objects.all().delete()
             Commitment.objects.all().delete()
             DistributionAllocation.objects.all().delete()
@@ -60,7 +65,6 @@ class Command(BaseCommand):
             Asset.objects.all().delete()
             Entity.objects.all().delete()
             AssetTag.objects.all().delete()
-            # Also clear Plaid data if present
             try:
                 from plaid_integration.models import PlaidAccount, PlaidItem
                 PlaidAccount.objects.all().delete()
@@ -69,338 +73,269 @@ class Command(BaseCommand):
                 pass
             self.stdout.write(self.style.WARNING('  All tables cleared.'))
 
-        self.stdout.write('Creating educational seed data...')
+        self.stdout.write('Creating seed data (Setup sheet only)...')
 
-        # Tags
+        # ── Tags ──
         tag_pe = AssetTag.objects.create(name='Private Equity', slug='private-equity', color='#8B5CF6')
         tag_vc = AssetTag.objects.create(name='Venture Capital', slug='venture-capital', color='#3B82F6')
         tag_re = AssetTag.objects.create(name='Real Estate', slug='real-estate', color='#10B981')
+        tag_credit = AssetTag.objects.create(name='Credit', slug='credit', color='#EF4444')
         tag_growth = AssetTag.objects.create(name='Growth', slug='growth', color='#F59E0B')
-        tag_income = AssetTag.objects.create(name='Income', slug='income', color='#EF4444')
+        tag_infra = AssetTag.objects.create(name='Infrastructure', slug='infrastructure', color='#6366F1')
 
-        # ── Entities ──
+        # ════════════════════════════════════════════════════════════════
+        # ENTITIES (the investors)
+        # ════════════════════════════════════════════════════════════════
         acme = Entity.objects.create(
             name='Acme Capital Partners',
             entity_type='LLC',
-            description='Fully realized PE fund - 2x cash return, zero residual.',
+            description='Family office vehicle for domestic PE/VC investments.',
             email='acme@example.com',
         )
         blue = Entity.objects.create(
             name='Blue Harbor Family Trust',
             entity_type='trust',
-            description='Partially called fund - mix of distributions and unrealized gains.',
+            description='Irrevocable trust holding diversified alt. investments.',
             email='blue@example.com',
         )
         cypress = Entity.objects.create(
             name='Cypress Growth Holdings',
             entity_type='company',
-            description='Early-stage VC - no distributions yet, growing residual (J-curve).',
+            description='Growth-oriented holding company.',
             email='cypress@example.com',
         )
         drake = Entity.objects.create(
             name='Drake Equity Group',
             entity_type='partnership',
-            description='Mature fund - mostly distributed, small residual tail.',
+            description='Multi-strategy partnership winding down legacy funds.',
             email='drake@example.com',
         )
 
-        # ── Assets ──
-        fund_alpha = Asset.objects.create(
+        # ════════════════════════════════════════════════════════════════
+        # ASSETS (the partnerships / funds)
+        # ════════════════════════════════════════════════════════════════
+        alpha = Asset.objects.create(
             name='Alpha Buyout Fund III',
             asset_type='private_equity',
-            description='Large-cap buyout fund (vintage 2020). Fully realized.',
+            description='Large-cap buyout fund (vintage 2018). EIN 82-1234567.',
         )
-        fund_alpha.tags.add(tag_pe, tag_income)
+        alpha.tags.add(tag_pe)
 
-        fund_beacon = Asset.objects.create(
+        beacon = Asset.objects.create(
             name='Beacon Real Assets II',
             asset_type='real_estate',
-            description='Core-plus real estate fund (vintage 2022). Still deploying.',
+            description='Core-plus real estate fund (vintage 2021). EIN 83-2345678.',
         )
-        fund_beacon.tags.add(tag_re, tag_income)
+        beacon.tags.add(tag_re)
 
-        fund_catalyst = Asset.objects.create(
+        catalyst = Asset.objects.create(
             name='Catalyst Ventures IV',
-            asset_type='private_equity',
-            description='Early-stage venture fund (vintage 2023). Pre-distribution.',
+            asset_type='venture_capital',
+            description='Early-stage venture fund (vintage 2022). EIN 84-3456789.',
         )
-        fund_catalyst.tags.add(tag_vc, tag_growth)
+        catalyst.tags.add(tag_vc, tag_growth)
 
-        fund_delta = Asset.objects.create(
+        delta = Asset.objects.create(
             name='Delta Credit Opportunities I',
-            asset_type='fixed_income',
-            description='Distressed / special situations fund (vintage 2019). Wind-down phase.',
+            asset_type='credit',
+            description='Distressed / special-situations credit (vintage 2019). EIN 85-4567890.',
         )
-        fund_delta.tags.add(tag_pe, tag_income)
+        delta.tags.add(tag_credit)
 
-        stock_spy = Asset.objects.create(
-            name='S&P 500 Index Fund',
-            asset_type='public_equity',
-            ticker_symbol='SPY',
-            description='Passive index tracking. Owned by Blue Harbor.',
+        evergreen = Asset.objects.create(
+            name='Evergreen Infrastructure LP',
+            asset_type='infrastructure',
+            description='Core infra fund — toll roads & utilities (vintage 2020). EIN 86-5678901.',
         )
-        stock_spy.tags.add(tag_growth)
+        evergreen.tags.add(tag_infra)
 
-        # ── Ownerships (100% per entity-fund for clarity) ──
-        EntityAssetOwnership.objects.create(
-            entity=acme, asset=fund_alpha,
-            percentage=Decimal('100.0000'), effective_date=date(2020, 3, 1),
+        frontier = Asset.objects.create(
+            name='Frontier Growth Equity V',
+            asset_type='private_equity',
+            description='Growth equity targeting healthcare & tech (vintage 2023). EIN 87-6789012.',
         )
-        EntityAssetOwnership.objects.create(
-            entity=blue, asset=fund_beacon,
-            percentage=Decimal('100.0000'), effective_date=date(2022, 6, 1),
-        )
-        EntityAssetOwnership.objects.create(
-            entity=blue, asset=stock_spy,
-            percentage=Decimal('100.0000'), effective_date=date(2022, 1, 1),
-        )
-        EntityAssetOwnership.objects.create(
-            entity=cypress, asset=fund_catalyst,
-            percentage=Decimal('100.0000'), effective_date=date(2023, 1, 15),
-        )
-        EntityAssetOwnership.objects.create(
-            entity=drake, asset=fund_delta,
-            percentage=Decimal('100.0000'), effective_date=date(2019, 9, 1),
-        )
+        frontier.tags.add(tag_pe, tag_growth)
 
         # ════════════════════════════════════════════════════════════════
-        # 1) ACME - Alpha Buyout Fund III
-        #    Commitment: $1,000,000   Fully called (100%)
-        #    Distributions: $2,000,000  Residual: $0
-        #    DPI=2.00  RVPI=0.00  TVPI=2.00
+        # OWNERSHIPS (entity ↔ asset + % + inception date)
+        #   K-1 amounts already reflect the partner's share.
+        #   Ownership % is recorded for reference / gross-up calcs only.
         # ════════════════════════════════════════════════════════════════
-        commit_acme = Commitment.objects.create(
-            entity=acme, asset=fund_alpha,
-            commitment_date=date(2020, 3, 1),
-            original_amount=Decimal('1000000.00'),
-            notes='$1M commitment, fully called over 2020-2021.',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_acme, call_date=date(2020, 4, 1),
-            amount=Decimal('300000.00'), notes='Initial draw - 30%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_acme, call_date=date(2020, 9, 1),
-            amount=Decimal('300000.00'), notes='Second draw - 30%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_acme, call_date=date(2021, 3, 1),
-            amount=Decimal('250000.00'), notes='Third draw - 25%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_acme, call_date=date(2021, 9, 1),
-            amount=Decimal('150000.00'), notes='Final draw - 15%',
-        )
-
-        # Distributions: $2,000,000 total (DPI = 2.0x)
-        for dt, amt, dtype, note in [
-            (date(2022, 6, 15), Decimal('400000.00'), 'regular', 'Partial realization - portfolio company A exit.'),
-            (date(2023, 3, 15), Decimal('600000.00'), 'regular', 'Portfolio company B IPO proceeds.'),
-            (date(2024, 1, 15), Decimal('500000.00'), 'special', 'Final liquidation - remaining portfolio.'),
-            (date(2024, 12, 1), Decimal('500000.00'), 'liquidating', 'Wind-down distribution.'),
-        ]:
-            d = Distribution.objects.create(
-                asset=fund_alpha, distribution_date=dt,
-                total_amount=amt, distribution_type=dtype, notes=note,
-            )
-            DistributionAllocation.objects.create(
-                distribution=d, entity=acme,
-                amount=amt, percentage=Decimal('100.0000'),
+        ownerships = [
+            # Acme owns 3 funds
+            (acme, alpha,     Decimal('80.0000'),  date(2018, 4, 1)),
+            (acme, catalyst,  Decimal('15.0000'),  date(2022, 3, 1)),
+            (acme, frontier,  Decimal('25.0000'),  date(2023, 6, 1)),
+            # Blue Harbor owns 2 funds
+            (blue, beacon,    Decimal('100.0000'), date(2021, 7, 1)),
+            (blue, evergreen, Decimal('50.0000'),  date(2020, 1, 15)),
+            # Cypress owns 2 funds
+            (cypress, catalyst,  Decimal('10.0000'),  date(2022, 3, 1)),
+            (cypress, frontier,  Decimal('12.5000'),  date(2023, 6, 1)),
+            # Drake owns 2 funds
+            (drake, delta,    Decimal('100.0000'), date(2019, 9, 1)),
+            (drake, evergreen, Decimal('50.0000'), date(2020, 1, 15)),
+        ]
+        for entity, asset, pct, eff_date in ownerships:
+            EntityAssetOwnership.objects.create(
+                entity=entity, asset=asset,
+                percentage=pct, effective_date=eff_date,
             )
 
-        # FMV: Fund is fully realized
-        FMVSnapshot.objects.create(
-            asset=fund_alpha, snapshot_date=date(2025, 12, 31),
-            value=Decimal('0.00'), source='manual',
-            notes='Fund fully liquidated.',
-        )
+        # ════════════════════════════════════════════════════════════════
+        # COMMITMENTS + CAPITAL CALLS
+        # ════════════════════════════════════════════════════════════════
 
-        # ════════════════════════════════════════════════════════════════
-        # 2) BLUE HARBOR - Beacon Real Assets II
-        #    Commitment: $2,000,000   75% called -> Paid-in $1,500,000
-        #    Distributions: $750,000   Residual: $1,800,000
-        #    DPI=0.50  RVPI=1.20  TVPI=1.70
-        # ════════════════════════════════════════════════════════════════
-        commit_blue = Commitment.objects.create(
-            entity=blue, asset=fund_beacon,
-            commitment_date=date(2022, 6, 1),
+        # Acme → Alpha ($2M commitment, fully called)
+        c = Commitment.objects.create(
+            entity=acme, asset=alpha,
+            commitment_date=date(2018, 4, 1),
             original_amount=Decimal('2000000.00'),
-            notes='$2M commitment to real estate fund. 75% called to date.',
         )
-        CapitalCall.objects.create(
-            commitment=commit_blue, call_date=date(2022, 7, 1),
-            amount=Decimal('500000.00'), notes='Initial draw - 25%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_blue, call_date=date(2023, 1, 1),
-            amount=Decimal('500000.00'), notes='Second draw - 25%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_blue, call_date=date(2023, 7, 1),
-            amount=Decimal('500000.00'), notes='Third draw - 25%',
-        )
-
-        # Distributions: $750,000 total
-        for dt, amt, note in [
-            (date(2024, 3, 31), Decimal('375000.00'), 'Quarterly income distribution.'),
-            (date(2024, 9, 30), Decimal('375000.00'), 'Quarterly income distribution.'),
+        for dt, amt in [
+            (date(2018, 6, 1), Decimal('600000.00')),
+            (date(2019, 1, 1), Decimal('600000.00')),
+            (date(2019, 7, 1), Decimal('500000.00')),
+            (date(2020, 3, 1), Decimal('300000.00')),
         ]:
-            d = Distribution.objects.create(
-                asset=fund_beacon, distribution_date=dt,
-                total_amount=amt, distribution_type='regular', notes=note,
-            )
-            DistributionAllocation.objects.create(
-                distribution=d, entity=blue,
-                amount=amt, percentage=Decimal('100.0000'),
-            )
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
 
-        # FMV snapshots
-        FMVSnapshot.objects.create(
-            asset=fund_beacon, snapshot_date=date(2024, 6, 30),
-            value=Decimal('1500000.00'), source='manual',
-            notes='Mid-year appraisal.',
+        # Acme → Catalyst ($150K)
+        c = Commitment.objects.create(
+            entity=acme, asset=catalyst,
+            commitment_date=date(2022, 3, 1),
+            original_amount=Decimal('150000.00'),
         )
-        FMVSnapshot.objects.create(
-            asset=fund_beacon, snapshot_date=date(2025, 12, 31),
-            value=Decimal('1800000.00'), source='manual',
-            notes='Year-end appraisal - appreciation on core properties.',
-        )
+        for dt, amt in [
+            (date(2022, 6, 1), Decimal('50000.00')),
+            (date(2023, 3, 1), Decimal('50000.00')),
+            (date(2024, 1, 1), Decimal('30000.00')),
+        ]:
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
 
-        # SPY index fund for Blue Harbor (adds to asset class summary)
-        FMVSnapshot.objects.create(
-            asset=stock_spy, snapshot_date=date(2025, 6, 30),
-            value=Decimal('480000.00'), source='manual',
-            notes='Mid-year market value.',
-        )
-        FMVSnapshot.objects.create(
-            asset=stock_spy, snapshot_date=date(2025, 12, 31),
-            value=Decimal('520000.00'), source='manual',
-            notes='Year-end market value.',
-        )
-
-        # ════════════════════════════════════════════════════════════════
-        # 3) CYPRESS - Catalyst Ventures IV
-        #    Commitment: $500,000   60% called -> Paid-in $300,000
-        #    Distributions: $0   Residual: $450,000
-        #    DPI=0.00  RVPI=1.50  TVPI=1.50
-        #    (J-curve: all value is unrealized)
-        # ════════════════════════════════════════════════════════════════
-        commit_cypress = Commitment.objects.create(
-            entity=cypress, asset=fund_catalyst,
-            commitment_date=date(2023, 1, 15),
+        # Acme → Frontier ($500K)
+        c = Commitment.objects.create(
+            entity=acme, asset=frontier,
+            commitment_date=date(2023, 6, 1),
             original_amount=Decimal('500000.00'),
-            notes='$500K VC commitment. Still in investment period.',
         )
-        CapitalCall.objects.create(
-            commitment=commit_cypress, call_date=date(2023, 3, 1),
-            amount=Decimal('100000.00'), notes='Initial draw - 20%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_cypress, call_date=date(2023, 9, 1),
-            amount=Decimal('100000.00'), notes='Second draw - 20%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_cypress, call_date=date(2024, 6, 1),
-            amount=Decimal('100000.00'), notes='Third draw - 20%',
-        )
-        # No distributions - typical for early VC
-
-        FMVSnapshot.objects.create(
-            asset=fund_catalyst, snapshot_date=date(2024, 6, 30),
-            value=Decimal('350000.00'), source='manual',
-            notes='Mid-year NAV statement.',
-        )
-        FMVSnapshot.objects.create(
-            asset=fund_catalyst, snapshot_date=date(2025, 12, 31),
-            value=Decimal('450000.00'), source='manual',
-            notes='Year-end NAV - Series B markups driving appreciation.',
-        )
-
-        # ════════════════════════════════════════════════════════════════
-        # 4) DRAKE - Delta Credit Opportunities I
-        #    Commitment: $3,000,000   100% called -> Paid-in $3,000,000
-        #    Distributions: $5,400,000   Residual: $300,000
-        #    DPI=1.80  RVPI=0.10  TVPI=1.90
-        # ════════════════════════════════════════════════════════════════
-        commit_drake = Commitment.objects.create(
-            entity=drake, asset=fund_delta,
-            commitment_date=date(2019, 9, 1),
-            original_amount=Decimal('3000000.00'),
-            notes='$3M credit fund commitment. Fully called. Winding down.',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_drake, call_date=date(2019, 10, 1),
-            amount=Decimal('1000000.00'), notes='Initial draw - 33%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_drake, call_date=date(2020, 4, 1),
-            amount=Decimal('1000000.00'), notes='Second draw - 33%',
-        )
-        CapitalCall.objects.create(
-            commitment=commit_drake, call_date=date(2020, 10, 1),
-            amount=Decimal('1000000.00'), notes='Final draw - 34%',
-        )
-
-        # Distributions: $5,400,000 total over several years
-        for dt, amt, dtype, note in [
-            (date(2021, 3, 31), Decimal('600000.00'), 'regular', 'Q1 2021 interest + principal'),
-            (date(2021, 9, 30), Decimal('600000.00'), 'regular', 'Q3 2021'),
-            (date(2022, 3, 31), Decimal('800000.00'), 'regular', 'Q1 2022 - recovery rally'),
-            (date(2022, 9, 30), Decimal('800000.00'), 'regular', 'Q3 2022'),
-            (date(2023, 3, 31), Decimal('700000.00'), 'regular', 'Q1 2023'),
-            (date(2023, 9, 30), Decimal('700000.00'), 'regular', 'Q3 2023'),
-            (date(2024, 6, 30), Decimal('600000.00'), 'return_of_capital', '2024 - wind-down return'),
-            (date(2025, 3, 31), Decimal('600000.00'), 'liquidating', 'Final liquidation proceeds'),
+        for dt, amt in [
+            (date(2023, 9, 1), Decimal('150000.00')),
+            (date(2024, 6, 1), Decimal('150000.00')),
         ]:
-            d = Distribution.objects.create(
-                asset=fund_delta, distribution_date=dt,
-                total_amount=amt, distribution_type=dtype, notes=note,
-            )
-            DistributionAllocation.objects.create(
-                distribution=d, entity=drake,
-                amount=amt, percentage=Decimal('100.0000'),
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
+
+        # Blue → Beacon ($3M, 100%)
+        c = Commitment.objects.create(
+            entity=blue, asset=beacon,
+            commitment_date=date(2021, 7, 1),
+            original_amount=Decimal('3000000.00'),
+        )
+        for dt, amt in [
+            (date(2021, 9, 1), Decimal('750000.00')),
+            (date(2022, 3, 1), Decimal('750000.00')),
+            (date(2022, 9, 1), Decimal('750000.00')),
+            (date(2023, 6, 1), Decimal('500000.00')),
+        ]:
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
+
+        # Blue → Evergreen ($600K, 50%)
+        c = Commitment.objects.create(
+            entity=blue, asset=evergreen,
+            commitment_date=date(2020, 1, 15),
+            original_amount=Decimal('600000.00'),
+        )
+        for dt, amt in [
+            (date(2020, 4, 1), Decimal('200000.00')),
+            (date(2021, 1, 1), Decimal('200000.00')),
+            (date(2022, 1, 1), Decimal('200000.00')),
+        ]:
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
+
+        # Cypress → Catalyst ($100K, 10%)
+        c = Commitment.objects.create(
+            entity=cypress, asset=catalyst,
+            commitment_date=date(2022, 3, 1),
+            original_amount=Decimal('100000.00'),
+        )
+        for dt, amt in [
+            (date(2022, 6, 1), Decimal('35000.00')),
+            (date(2023, 3, 1), Decimal('35000.00')),
+        ]:
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
+
+        # Cypress → Frontier ($250K, 12.5%)
+        c = Commitment.objects.create(
+            entity=cypress, asset=frontier,
+            commitment_date=date(2023, 6, 1),
+            original_amount=Decimal('250000.00'),
+        )
+        CapitalCall.objects.create(
+            commitment=c, call_date=date(2023, 9, 1), amount=Decimal('75000.00'),
+        )
+
+        # Drake → Delta ($2M, 100%)
+        c = Commitment.objects.create(
+            entity=drake, asset=delta,
+            commitment_date=date(2019, 9, 1),
+            original_amount=Decimal('2000000.00'),
+        )
+        for dt, amt in [
+            (date(2019, 10, 1), Decimal('700000.00')),
+            (date(2020, 4, 1),  Decimal('700000.00')),
+            (date(2020, 10, 1), Decimal('600000.00')),
+        ]:
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
+
+        # Drake → Evergreen ($600K, 50%)
+        c = Commitment.objects.create(
+            entity=drake, asset=evergreen,
+            commitment_date=date(2020, 1, 15),
+            original_amount=Decimal('600000.00'),
+        )
+        for dt, amt in [
+            (date(2020, 4, 1), Decimal('200000.00')),
+            (date(2021, 1, 1), Decimal('200000.00')),
+            (date(2022, 1, 1), Decimal('200000.00')),
+        ]:
+            CapitalCall.objects.create(commitment=c, call_date=dt, amount=amt)
+
+        # ════════════════════════════════════════════════════════════════
+        # FMV SNAPSHOTS (year-end NAVs)
+        # ════════════════════════════════════════════════════════════════
+        fmv_data = [
+            (alpha,     date(2024, 12, 31), Decimal('800000.00'),  'Year-end NAV'),
+            (alpha,     date(2025, 12, 31), Decimal('350000.00'),  'Wind-down — mostly realized'),
+            (beacon,    date(2024, 12, 31), Decimal('3200000.00'), 'Year-end appraisal'),
+            (beacon,    date(2025, 12, 31), Decimal('3500000.00'), 'Year-end appraisal — appreciation'),
+            (catalyst,  date(2024, 12, 31), Decimal('160000.00'),  'Post-Series-A markups'),
+            (catalyst,  date(2025, 12, 31), Decimal('250000.00'),  'Post-Series-B markups'),
+            (delta,     date(2024, 12, 31), Decimal('450000.00'),  'Remaining loan book'),
+            (delta,     date(2025, 12, 31), Decimal('180000.00'),  'Nearly wound down'),
+            (evergreen, date(2024, 12, 31), Decimal('1400000.00'), 'Year-end infrastructure NAV'),
+            (evergreen, date(2025, 12, 31), Decimal('1500000.00'), 'Stable cash flows'),
+            (frontier,  date(2024, 12, 31), Decimal('400000.00'),  'Early deployment phase'),
+            (frontier,  date(2025, 12, 31), Decimal('550000.00'),  'Healthcare portfolio appreciation'),
+        ]
+        for asset, snap_date, value, note in fmv_data:
+            FMVSnapshot.objects.create(
+                asset=asset, snapshot_date=snap_date,
+                value=value, source='manual', notes=note,
             )
 
-        # FMV snapshots
-        FMVSnapshot.objects.create(
-            asset=fund_delta, snapshot_date=date(2025, 6, 30),
-            value=Decimal('400000.00'), source='manual',
-            notes='Remaining loan book - mid-year.',
-        )
-        FMVSnapshot.objects.create(
-            asset=fund_delta, snapshot_date=date(2025, 12, 31),
-            value=Decimal('300000.00'), source='manual',
-            notes='Year-end - most loans paid off, small tail remaining.',
-        )
-
-        # ── Summary output ──
+        # ── Summary ──
         self.stdout.write('')
-        self.stdout.write(self.style.SUCCESS('=' * 70))
-        self.stdout.write(self.style.SUCCESS(' Educational Seed Data Created'))
-        self.stdout.write(self.style.SUCCESS('=' * 70))
+        self.stdout.write(self.style.SUCCESS('=' * 60))
+        self.stdout.write(self.style.SUCCESS(' Seed Data Created (Setup sheet)'))
+        self.stdout.write(self.style.SUCCESS('=' * 60))
+        self.stdout.write(f'  Entities:      {Entity.objects.count()}')
+        self.stdout.write(f'  Assets:        {Asset.objects.count()}')
+        self.stdout.write(f'  Ownerships:    {EntityAssetOwnership.objects.count()}')
+        self.stdout.write(f'  Tags:          {AssetTag.objects.count()}')
+        self.stdout.write(f'  Commitments:   {Commitment.objects.count()}')
+        self.stdout.write(f'  Capital Calls: {CapitalCall.objects.count()}')
+        self.stdout.write(f'  FMV Snapshots: {FMVSnapshot.objects.count()}')
         self.stdout.write('')
-        self.stdout.write(f'  Entities:       {Entity.objects.count()}')
-        self.stdout.write(f'  Assets:         {Asset.objects.count()}')
-        self.stdout.write(f'  Commitments:    {Commitment.objects.count()}')
-        self.stdout.write(f'  Capital Calls:  {CapitalCall.objects.count()}')
-        self.stdout.write(f'  Distributions:  {Distribution.objects.count()}')
-        self.stdout.write(f'  Allocations:    {DistributionAllocation.objects.count()}')
-        self.stdout.write(f'  FMV Snapshots:  {FMVSnapshot.objects.count()}')
-        self.stdout.write(f'  Ownerships:     {EntityAssetOwnership.objects.count()}')
-        self.stdout.write(f'  Tags:           {AssetTag.objects.count()}')
-        self.stdout.write('')
-        self.stdout.write('  Expected Portfolio Summary:')
-        self.stdout.write('  Entity                    | Commit.  | %Called | Unfunded | Paid-In | Distrib. | Residual | DPI  | RVPI | TVPI')
-        self.stdout.write('  --------------------------|----------|--------|----------|---------|----------|----------|------|------|------')
-        self.stdout.write('  Acme Capital Partners     |   $1.0M  |  100%  |    $0    |  $1.0M  |  $2.0M   |    $0    | 2.00 | 0.00 | 2.00')
-        self.stdout.write('  Blue Harbor Family Trust  |   $2.0M  |   75%  |  $0.5M   |  $1.5M  |  $0.75M  |  $1.8M   | 0.50 | 1.20 | 1.70')
-        self.stdout.write('  Cypress Growth Holdings   |   $0.5M  |   60%  |  $0.2M   |  $0.3M  |    $0    |  $0.45M  | 0.00 | 1.50 | 1.50')
-        self.stdout.write('  Drake Equity Group        |   $3.0M  |  100%  |    $0    |  $3.0M  |  $5.4M   |  $0.3M   | 1.80 | 0.10 | 1.90')
-        self.stdout.write('  All Entities              |   $6.5M  |   89%  |  $0.7M   |  $5.8M  |  $8.15M  |  $2.55M  | 1.41 | 0.44 | 1.85')
-        self.stdout.write('')
-        self.stdout.write('  Metric Guide:')
-        self.stdout.write('    DPI  = Distributions / Paid-In  (cash-on-cash return)')
-        self.stdout.write('    RVPI = Residual / Paid-In       (unrealized value remaining)')
-        self.stdout.write('    TVPI = (Dist + Residual) / Paid-In  (total value multiple)')
-        self.stdout.write('    IRR  = Time-weighted annualized return (XIRR)')
+        self.stdout.write('  Next step: Use "Simulate K-1 Upload" in the UI')
+        self.stdout.write('  to generate K-1 data → Activity → Reports')
         self.stdout.write('')
