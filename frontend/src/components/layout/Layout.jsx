@@ -24,7 +24,7 @@ export default function Layout() {
         />
       )}
       <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 lg:ml-64">
         <Header onMenuToggle={() => setSidebarOpen(o => !o)} />
         <main className="flex-1 p-3 sm:p-6 overflow-auto">
           <Outlet />

@@ -1,15 +1,23 @@
-from django.http import HttpResponse
+import logging
+
+from django.http import HttpResponse, FileResponse
 from django.db import transaction
 from decimal import Decimal
 from datetime import date
+from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     Entity, Asset, EntityAssetOwnership, Distribution,
     DistributionAllocation, Budget, BudgetLineItem,
     AssetTag, FMVSnapshot, Commitment, CapitalCall,
+    K1Document, K1PartnershipInfo, K1PartnerInfo, K1IncomeItem, K1CapitalAccount,
+    Activity,
 )
 from .serializers import (
     EntitySerializer, AssetSerializer, EntityAssetOwnershipSerializer,
@@ -17,6 +25,10 @@ from .serializers import (
     BudgetSerializer, BudgetWriteSerializer, BudgetLineItemSerializer,
     AssetTagSerializer, FMVSnapshotSerializer,
     CommitmentSerializer, CapitalCallSerializer,
+    K1DocumentSerializer, K1DocumentDetailSerializer,
+    K1PartnershipInfoSerializer, K1PartnerInfoSerializer,
+    K1IncomeItemSerializer, K1CapitalAccountSerializer,
+    ActivitySerializer,
 )
 from .reports import (
     generate_distribution_report, generate_dashboard_summary,
@@ -456,6 +468,77 @@ class CapitalCallViewSet(viewsets.ModelViewSet):
 
 
 # ---------------------------------------------------------------------------
+# Activity Ledger CRUD ViewSet
+# ---------------------------------------------------------------------------
+
+class ActivityViewSet(viewsets.ModelViewSet):
+    """CRUD for Activity (tax-basis ledger) records.
+
+    Supports query-string filters:
+        ?entity=<id>   — filter by entity
+        ?asset=<id>    — filter by asset (partnership)
+        ?year=<int>    — filter by year
+
+    When a specific year is requested the view auto-scaffolds Activity rows
+    for every EntityAssetOwnership pair that does not yet have one for that
+    year.  Beginning Basis, Ending Tax Basis, Δ vs prior year and other
+    derived fields are auto-computed by Activity.save().
+    """
+    serializer_class = ActivitySerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        qs = Activity.objects.select_related('entity', 'asset', 'source_k1_document').all()
+        entity_id = self.request.query_params.get('entity')
+        asset_id = self.request.query_params.get('asset')
+        year = self.request.query_params.get('year')
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+        if year:
+            qs = qs.filter(year=int(year))
+        return qs
+
+    # ------------------------------------------------------------------
+    # Auto-scaffold
+    # ------------------------------------------------------------------
+
+    def list(self, request, *args, **kwargs):
+        year = request.query_params.get('year')
+        if year:
+            self._scaffold(int(year))
+        return super().list(request, *args, **kwargs)
+
+    @staticmethod
+    def _scaffold(year):
+        """Create Activity rows for every EntityAssetOwnership pair missing for *year*.
+
+        Activity.save() auto-populates beginning_basis from the prior year's
+        ending_tax_basis and computes all derived fields.
+        """
+        pairs = set(
+            EntityAssetOwnership.objects.values_list('entity_id', 'asset_id').distinct()
+        )
+        existing = set(
+            Activity.objects.filter(year=year).values_list('entity_id', 'asset_id')
+        )
+        for entity_id, asset_id in pairs - existing:
+            Activity.objects.create(year=year, entity_id=entity_id, asset_id=asset_id)
+
+    def create(self, request, *args, **kwargs):
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception as exc:
+            if 'unique' in str(exc).lower():
+                return Response(
+                    {'error': 'An activity record already exists for this entity/asset/year combination.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            raise
+
+
+# ---------------------------------------------------------------------------
 # Portfolio Tracker API Views
 # ---------------------------------------------------------------------------
 
@@ -624,3 +707,391 @@ def investment_performance_export(request):
     )
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
+
+
+@api_view(['POST'])
+def activity_export(request):
+    """POST /api/activity/export/ — Export activity ledger to Excel."""
+    from .excel_export import export_activity_report
+    entity_id = request.data.get('entity')
+    asset_id = request.data.get('asset')
+    year = request.data.get('year')
+
+    qs = Activity.objects.select_related('entity', 'asset').order_by('entity__name', 'asset__name', 'year')
+    if entity_id:
+        qs = qs.filter(entity_id=entity_id)
+    if asset_id:
+        qs = qs.filter(asset_id=asset_id)
+    if year:
+        qs = qs.filter(year=int(year))
+
+    excel_buf = export_activity_report(list(qs))
+    today = date.today().isoformat()
+    filename = f"activity_report_{today}.xlsx"
+    response = HttpResponse(
+        excel_buf.read(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
+
+
+# ---------------------------------------------------------------------------
+# K-1 Document ViewSet
+# ---------------------------------------------------------------------------
+
+class K1DocumentViewSet(viewsets.ModelViewSet):
+    """CRUD + custom actions for K-1 PDF documents.
+
+    Endpoints:
+        POST   /api/k1-documents/upload/     — Upload & extract
+        GET    /api/k1-documents/            — List (filterable)
+        GET    /api/k1-documents/{id}/       — Detail
+        PUT    /api/k1-documents/{id}/       — Update extracted fields
+        DELETE /api/k1-documents/{id}/       — Delete (draft only)
+        POST   /api/k1-documents/{id}/confirm/  — Confirm & lock
+        GET    /api/k1-documents/{id}/download/  — Download original PDF
+        POST   /api/k1-documents/{id}/populate/  — Auto-populate portfolio
+    """
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return K1DocumentSerializer
+        return K1DocumentDetailSerializer
+
+    def get_queryset(self):
+        qs = K1Document.objects.select_related(
+            'entity', 'asset', 'partnership_info', 'partner_info', 'capital_account',
+        ).prefetch_related('income_items').all()
+
+        # Filters
+        tax_year = self.request.query_params.get('tax_year')
+        if tax_year:
+            qs = qs.filter(tax_year=tax_year)
+        doc_status = self.request.query_params.get('status')
+        if doc_status:
+            qs = qs.filter(status=doc_status)
+        entity_id = self.request.query_params.get('entity')
+        if entity_id:
+            qs = qs.filter(entity_id=entity_id)
+        asset_type = self.request.query_params.get('asset_type')
+        if asset_type:
+            qs = qs.filter(asset_type_classification=asset_type)
+        return qs
+
+    # ---- Upload & Extract (T028-T029) ----
+
+    @action(detail=False, methods=['post'], url_path='upload')
+    def upload(self, request):
+        """Upload a K-1 PDF, extract data, and create child records atomically."""
+        from .k1_parser import parse_k1_document
+
+        pdf_file = request.FILES.get('document')
+        if not pdf_file:
+            return Response(
+                {'error': 'No PDF file provided. Include a "document" field.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tax_year = request.data.get('tax_year')
+        if not tax_year:
+            return Response(
+                {'error': 'tax_year is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            tax_year = int(tax_year)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'tax_year must be an integer.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            with transaction.atomic():
+                # 1) Create the K1Document record
+                k1_doc = K1Document(
+                    tax_year=tax_year,
+                    document=pdf_file,
+                    original_filename=pdf_file.name,
+                    entity_id=request.data.get('entity') or None,
+                    asset_id=request.data.get('asset') or None,
+                    notes=request.data.get('notes', ''),
+                )
+                k1_doc.save()
+
+                # 2) Run the parser on the saved file
+                try:
+                    parsed = parse_k1_document(k1_doc.document.path)
+                except ValueError as parse_err:
+                    # Parser couldn't recognise the document
+                    k1_doc.notes = f"Parse warning: {parse_err}"
+                    k1_doc.save(update_fields=['notes'])
+                    # Still return the document — user can manually enter data
+                    serializer = K1DocumentDetailSerializer(k1_doc)
+                    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+                # 3) Update document-level fields from header
+                k1_doc.extraction_method = parsed.get('extraction_method', 'text')
+                if parsed.get('tax_year'):
+                    k1_doc.tax_year = parsed['tax_year']
+                k1_doc.is_final = parsed.get('is_final', False)
+                k1_doc.is_amended = parsed.get('is_amended', False)
+                if parsed.get('warnings'):
+                    k1_doc.notes = '\n'.join(parsed['warnings'])
+                k1_doc.save()
+
+                # 4) Create child records
+                p_info = parsed.get('partnership_info', {})
+                if p_info:
+                    K1PartnershipInfo.objects.create(document=k1_doc, **p_info)
+
+                pt_info = parsed.get('partner_info', {})
+                if pt_info:
+                    K1PartnerInfo.objects.create(document=k1_doc, **pt_info)
+
+                for item_data in parsed.get('income_items', []):
+                    is_supp = item_data.pop('is_supplemental', False)
+                    K1IncomeItem.objects.create(
+                        document=k1_doc,
+                        is_supplemental=is_supp,
+                        **item_data,
+                    )
+
+                cap = parsed.get('capital_account', {})
+                if cap:
+                    K1CapitalAccount.objects.create(document=k1_doc, **cap)
+
+            # Re-fetch with relations for response
+            k1_doc.refresh_from_db()
+            serializer = K1DocumentDetailSerializer(k1_doc)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except Exception as exc:
+            logger.exception('K-1 upload failed')
+            return Response(
+                {'error': f'Upload failed: {str(exc)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    # ---- Update extracted fields (T034) ----
+
+    def update(self, request, *args, **kwargs):
+        """Update extracted fields for a draft K-1 document.
+
+        Accepts nested partnership_info, partner_info, income_items[],
+        capital_account as flat JSON. Only allowed while status is draft.
+        """
+        k1_doc = self.get_object()
+        if k1_doc.status == 'confirmed':
+            return Response(
+                {'error': 'Cannot edit a confirmed document.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # Update document-level fields
+            for field in ('tax_year', 'asset_type_classification', 'is_final',
+                          'is_amended', 'notes'):
+                if field in request.data:
+                    setattr(k1_doc, field, request.data[field])
+            # FK fields need special handling for null
+            for fk_field in ('entity', 'asset'):
+                if fk_field in request.data:
+                    val = request.data[fk_field]
+                    setattr(k1_doc, f'{fk_field}_id', val if val else None)
+            k1_doc.save()
+
+            # Update partnership_info
+            pi_data = request.data.get('partnership_info')
+            if pi_data and isinstance(pi_data, dict):
+                K1PartnershipInfo.objects.update_or_create(
+                    document=k1_doc,
+                    defaults=pi_data,
+                )
+
+            # Update partner_info
+            pt_data = request.data.get('partner_info')
+            if pt_data and isinstance(pt_data, dict):
+                # Clean empty strings for decimal fields
+                decimal_fields = {
+                    'profit_beginning_pct', 'profit_ending_pct',
+                    'loss_beginning_pct', 'loss_ending_pct',
+                    'capital_beginning_pct', 'capital_ending_pct',
+                    'nonrecourse_beginning', 'nonrecourse_ending',
+                    'qualified_nonrecourse_beginning', 'qualified_nonrecourse_ending',
+                    'recourse_beginning', 'recourse_ending',
+                    'section_704c_beginning', 'section_704c_ending',
+                }
+                cleaned_pt = {}
+                for k, v in pt_data.items():
+                    if k in decimal_fields and v in ('', None):
+                        cleaned_pt[k] = None
+                    else:
+                        cleaned_pt[k] = v
+                K1PartnerInfo.objects.update_or_create(
+                    document=k1_doc,
+                    defaults=cleaned_pt,
+                )
+
+            # Update income_items (replace-all strategy)
+            items_data = request.data.get('income_items')
+            if items_data is not None and isinstance(items_data, list):
+                k1_doc.income_items.all().delete()
+                for item in items_data:
+                    # Clean up empty strings for nullable numeric fields
+                    cleaned = {}
+                    for k, v in item.items():
+                        if k == 'amount' and v in ('', None):
+                            cleaned[k] = None
+                        else:
+                            cleaned[k] = v
+                    K1IncomeItem.objects.create(document=k1_doc, **cleaned)
+
+            # Update capital_account
+            cap_data = request.data.get('capital_account')
+            if cap_data and isinstance(cap_data, dict):
+                # Clean empty strings for decimal fields
+                cleaned_cap = {}
+                for k, v in cap_data.items():
+                    if v == '' and k != 'tax_basis_method':
+                        cleaned_cap[k] = None
+                    else:
+                        cleaned_cap[k] = v
+                K1CapitalAccount.objects.update_or_create(
+                    document=k1_doc,
+                    defaults=cleaned_cap,
+                )
+
+        k1_doc.refresh_from_db()
+        serializer = K1DocumentDetailSerializer(k1_doc)
+        return Response(serializer.data)
+
+    # ---- Confirm (T035) ----
+
+    @action(detail=True, methods=['post'], url_path='confirm')
+    def confirm(self, request, pk=None):
+        """Transition a draft document to confirmed status."""
+        k1_doc = self.get_object()
+        if k1_doc.status == 'confirmed':
+            return Response(
+                {'error': 'Document is already confirmed.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        k1_doc.status = 'confirmed'
+        k1_doc.confirmed_at = timezone.now()
+        k1_doc.save(update_fields=['status', 'confirmed_at'])
+
+        k1_doc.refresh_from_db()
+        serializer = K1DocumentDetailSerializer(k1_doc)
+        return Response(serializer.data)
+
+    # ---- Delete with file cleanup (T044) ----
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a K-1 document and its associated PDF file."""
+        k1_doc = self.get_object()
+        # Clean up the PDF file from disk
+        if k1_doc.document:
+            try:
+                k1_doc.document.delete(save=False)
+            except Exception:
+                pass
+        return super().destroy(request, *args, **kwargs)
+
+    # ---- Download original PDF (T045) ----
+
+    @action(detail=True, methods=['get'], url_path='download')
+    def download(self, request, pk=None):
+        """Return the original PDF file for download."""
+        k1_doc = self.get_object()
+        if not k1_doc.document:
+            return Response(
+                {'error': 'No PDF file associated with this document.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return FileResponse(
+            k1_doc.document.open('rb'),
+            content_type='application/pdf',
+            as_attachment=True,
+            filename=k1_doc.original_filename or f'k1_{k1_doc.id}.pdf',
+        )
+
+    # ---- Auto-populate portfolio (T054) ----
+
+    @action(detail=True, methods=['post'], url_path='populate')
+    def populate(self, request, pk=None):
+        """Create Distribution records from a confirmed K-1 document."""
+        from .k1_portfolio import populate_portfolio_from_k1
+
+        k1_doc = self.get_object()
+        try:
+            result = populate_portfolio_from_k1(k1_doc)
+            return Response({
+                'message': (
+                    f"Created {result['distributions_created']} distribution(s) "
+                    f"totaling ${result['total_distributions']} and recorded "
+                    f"{result['income_items_processed']} income item(s) in the "
+                    f"Activity ledger."
+                ),
+                **result,
+                'total_distributions': str(result['total_distributions']),
+            })
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    # ---- Simulate K-1 upload (dev / demo) ----
+
+    @action(detail=False, methods=['post'], url_path='simulate')
+    def simulate(self, request):
+        """Generate realistic mock K-1 data for entity/asset pairs.
+
+        Body params:
+            year (int, required)  — Tax year to simulate.
+            entity (int, optional) — Limit to one entity.
+            asset  (int, optional) — Limit to one asset.
+
+        For every qualifying ownership pair that does NOT already have a
+        populated K-1 for that year, creates K1Document + child records,
+        auto-confirms, and runs the populate pipeline so Distribution +
+        Activity rows appear immediately.
+        """
+        from .k1_simulator import simulate_k1_batch
+
+        year = request.data.get('year')
+        if not year:
+            return Response(
+                {'error': 'year is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            year = int(year)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'year must be an integer.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        entity_id = request.data.get('entity') or None
+        asset_id = request.data.get('asset') or None
+
+        try:
+            result = simulate_k1_batch(year, entity_id=entity_id, asset_id=asset_id)
+            n = len(result['created'])
+            s = len(result['skipped'])
+            return Response({
+                'message': f"Simulated {n} K-1(s) for {year}. Skipped {s}.",
+                **result,
+            })
+        except Exception as exc:
+            logger.exception('K-1 simulation failed')
+            return Response(
+                {'error': f'Simulation failed: {str(exc)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )

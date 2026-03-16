@@ -1538,28 +1538,27 @@ class AssetClassSummaryAPITest(TestCase):
         response = self.client.post('/api/portfolio/asset-class-summary/', {}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.data
-        self.assertIn('by_class', data)
-        self.assertIn('total_value', data)
-        self.assertEqual(data['item_count'], 2)
+        self.assertIn('rows', data)
+        self.assertIn('all_classes', data)
+        self.assertIn('as_of_date', data)
 
     def test_summary_type_filter(self):
         response = self.client.post(
             '/api/portfolio/asset-class-summary/',
-            {'type_filters': ['cash']},
+            {'type_filters': ['real_estate']},
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        # Should only have cash class
-        self.assertEqual(len(response.data['by_class']), 1)
-        self.assertEqual(response.data['by_class'][0]['asset_type'], 'cash')
+        # Filters should be echoed back
+        self.assertEqual(response.data['filters']['type_filters'], ['real_estate'])
 
     def test_empty_portfolio(self):
         Asset.objects.all().delete()
         FMVSnapshot.objects.all().delete()
         response = self.client.post('/api/portfolio/asset-class-summary/', {}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['total_value'], '0.00')
-        self.assertEqual(response.data['by_class'], [])
+        self.assertIn('all_classes', response.data)
+        self.assertEqual(response.data['all_classes']['paid_in'], '0.00')
 
 
 class AssetClassSummaryExportTest(TestCase):

@@ -14,6 +14,8 @@ router.register(r'fmv-snapshots', views.FMVSnapshotViewSet, basename='fmvsnapsho
 router.register(r'tags', views.AssetTagViewSet, basename='assettag')
 router.register(r'commitments', views.CommitmentViewSet, basename='commitment')
 router.register(r'capital-calls', views.CapitalCallViewSet, basename='capitalcall')
+router.register(r'k1-documents', views.K1DocumentViewSet, basename='k1document')
+router.register(r'activities', views.ActivityViewSet, basename='activity')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -30,6 +32,8 @@ urlpatterns = [
     path('portfolio/summary/export/', views.portfolio_summary_export, name='portfolio-summary-export'),
     path('portfolio/asset-class-summary/export/', views.asset_class_summary_export, name='asset-class-summary-export'),
     path('portfolio/performance/export/', views.investment_performance_export, name='investment-performance-export'),
+    # Activity export
+    path('activity/export/', views.activity_export, name='activity-export'),
     # Performance endpoints
     path('assets/<int:pk>/performance/', views.asset_performance, name='asset-performance'),
     path('entities/<int:pk>/performance/', views.entity_performance, name='entity-performance'),
