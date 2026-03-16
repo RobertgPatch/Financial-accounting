@@ -1031,9 +1031,14 @@ class K1DocumentViewSet(viewsets.ModelViewSet):
         try:
             result = populate_portfolio_from_k1(k1_doc)
             return Response({
-                'message': f"Created {result['distributions_created']} distributions totaling ${result['total_amount']}.",
+                'message': (
+                    f"Created {result['distributions_created']} distribution(s) "
+                    f"totaling ${result['total_distributions']} and recorded "
+                    f"{result['income_items_processed']} income item(s) in the "
+                    f"Activity ledger."
+                ),
                 **result,
-                'total_amount': str(result['total_amount']),
+                'total_distributions': str(result['total_distributions']),
             })
         except ValueError as e:
             return Response(
