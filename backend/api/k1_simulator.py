@@ -206,7 +206,8 @@ def simulate_k1_for_pair(entity, asset, ownership, year):
         'asset': asset.name,
         'year': year,
         'distributions_created': result['distributions_created'],
-        'total_amount': str(result['total_amount']),
+        'total_distributions': str(result['total_distributions']),
+        'income_items_processed': result['income_items_processed'],
         'activity_id': result.get('activity_id'),
     }
 
